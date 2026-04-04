@@ -4,6 +4,8 @@ const skillEngine = require('./skillEngine');
 const db = require('../db/database');
 const mentorEngine = require('./mentorEngine');
 const crypto = require('crypto');
+const memoryService = require('../services/memoryService');
+const TaskEngine = require('./taskEngine');
 
 function lerp(start, end, amt) {
     return (1 - amt) * start + amt * end;
@@ -90,29 +92,70 @@ const learningController = {
     };
   },
 
+  /**
+   * Compilation-stage Validator (preRunCheck)
+   * Ensures the student's project structure is actually 'runnable' before triggering execution.
+   */
+  async preRunCheck(projectId) {
+    const tracker = require('../services/progressTracker');
+    const project = tracker.getProject(projectId);
+    if (!project) return { success: false, reason: "Project context not found." };
+
+    const WorkspaceService = require('../services/workspaceService');
+    let files = [];
+    try { files = WorkspaceService.listFiles(projectId); } catch(e) {}
+
+    // 1. Manifest Presence
+    const stack = (project.tech_stack || []).join(',').toLowerCase();
+    const isNode = stack.includes('react') || stack.includes('express') || stack.includes('node');
+    const isPython = stack.includes('python') || stack.includes('ml');
+
+    if (isNode && !files.some(f => f.path.endsWith('package.json'))) {
+      return { success: false, reason: "Missing 'package.json'. Node.js projects require a manifest to resolve dependencies." };
+    }
+
+    // 2. Entry Point Validation
+    const commonEntries = isNode ? ['server.js', 'index.js', 'app.js', 'index.html'] : isPython ? ['app.py', 'train.py', 'main.py'] : [];
+    const hasEntry = files.some(f => commonEntries.some(e => f.path.endsWith(e)));
+
+    if (commonEntries.length > 0 && !hasEntry) {
+        return { success: false, reason: `Logical entry point not found. Expected one of: ${commonEntries.join(', ')}` };
+    }
+
+    return { success: true };
+  },
+
+  /**
+   * Adaptive Learning Feedback Logic
+   * Converts a raw behavior score into a psychological state.
+   */
   controlHints(cheatScore, attempts = 0) {
-    if (cheatScore > 60) {
+    if (cheatScore > 70) {
       return {
          action: 'restricted',
-         maxHintLevel: 1,
-         message: "Let's go step-by-step to ensure understanding. Explain your logic before proceeding."
+         label: 'Deep Understanding Required',
+         color: '#f85149',
+         maxHintLevel: 1, // Minimum help - explain first
+         message: "Before we continue, I want to make sure you've mastered this approach. Please explain how your current code handles the core logic of this task."
       };
     }
-    if (attempts > 3) {
-      return {
-         action: 'struggling',
-         maxHintLevel: 2,
-         message: "You've made several attempts. Let's break this down into smaller steps."
-      };
-    }
-    if (cheatScore > 30) {
+    
+    if (cheatScore > 40 || attempts > 3) {
       return {
          action: 'suspicious',
-         maxHintLevel: 2,
-         message: "Make sure you understand the code block you just added."
+         label: 'Active Learning Mode',
+         color: '#f2cc60',
+         maxHintLevel: 2, // Intermediate - Socratic help
+         message: "You're making progress. Instead of giving the answer, I'll ask questions to help you find the logic yourself. Think: how should this component handle state?"
       };
     }
-    return { action: 'normal' };
+    
+    return { 
+      action: 'normal',
+      label: 'Learning Mode',
+      color: '#3fb950',
+      message: "Great work! I'm here if you need a specific hint or code review."
+    };
   },
 
   async routeToMentor(role, input, options = { isCourse: false }) {
@@ -146,6 +189,9 @@ const learningController = {
     const projectId = userRow?.active_project_id;
     if (!projectId) throw new Error('No active project found for user');
 
+    // [MEMORY] Log the intent
+    memoryService.updateLastAction(projectId, taskId, `Action Type: ${type}`);
+
     // Get behavior + progress data for mentor mode
     const behavior = db.prepare('SELECT cheat_score FROM behavior_logs WHERE user_id = ? AND task_id = ? ORDER BY created_at DESC LIMIT 1').get(userId, taskId);
     const progress = db.prepare('SELECT attempts, status FROM course_progress WHERE project_id = ? AND task_id = ?').get(projectId, taskId);
@@ -160,34 +206,41 @@ const learningController = {
     if (directives.action === 'restricted') mentorMode = 'restricted';
     else if (directives.action === 'struggling' || directives.action === 'suspicious') mentorMode = 'struggling';
 
-    // ── TYPE: HINT ──────────────────────────────────────────────────
+    // ── TYPE: HINT (LADDER LOGIC) ───────────────────────────────────
     if (type === 'hint') {
-      // Anti-spam: count recent hint requests
+      // 1. Anti-spam & Behavior Limits
       const oneHourAgo = new Date(Date.now() - 3600000).toISOString();
-      const recentHints = db.prepare(
-        'SELECT COUNT(*) as cnt FROM hint_requests WHERE user_id = ? AND task_id = ? AND requested_at > ?'
-      ).get(userId, taskId, oneHourAgo);
-
-      if (recentHints && recentHints.cnt >= MAX_HINTS_PER_HOUR) {
-        return {
-          feedback: [{ type: 'warn', message: `Hint limit reached (${MAX_HINTS_PER_HOUR}/hour). Try solving it yourself first.` }],
-          scaffold: null,
-          level: directives.maxHintLevel || 3,
-          passed: false,
-          mentorMode
-        };
+      const recentCount = db.prepare('SELECT COUNT(*) as cnt FROM hint_requests WHERE user_id=? AND requested_at>?').get(userId, oneHourAgo);
+      if (recentCount.cnt >= MAX_HINTS_PER_HOUR) {
+        return { error: `Hint limit reached (${MAX_HINTS_PER_HOUR}/hr). Think deeper!`, passed: false };
       }
 
-      // Record hint request
-      db.prepare('INSERT INTO hint_requests (id, user_id, task_id) VALUES (?, ?, ?)').run(crypto.randomUUID(), userId, taskId);
+      // 2. Determine Next Ladder Level (L1 -> L4)
+      const lastHint = db.prepare('SELECT level FROM hint_requests WHERE user_id=? AND task_id=? ORDER BY requested_at DESC LIMIT 1').get(userId, taskId);
+      let nextLevel = (lastHint?.level || 0) + 1;
+      if (nextLevel > 4) nextLevel = 4; // Caps at Full Solution
 
-      // Get leveled scaffold
-      const scaffoldResult = scaffoldEngine.generateScaffold(taskId, directives.maxHintLevel || 3);
+      // 3. Behavior Constraint (Restrict if cheating)
+      if (directives.action === 'restricted' && nextLevel > 1) {
+          return { error: "Behavior Restricted: You must explain your current logic before receiving more detailed hints.", passed: false };
+      }
+
+      // 4. Generate Hint via Task Engine
+      const task = db.prepare('SELECT * FROM course_tasks WHERE id=?').get(taskId);
+      const history = db.prepare('SELECT hint_text FROM hint_requests WHERE user_id=? AND task_id=?').all(userId, taskId).map(h => h.hint_text);
       
+      const hintText = await TaskEngine.getHint(nextLevel, task, code || '', history);
+
+      // 5. Record & Penalize
+      db.prepare('INSERT INTO hint_requests (id, user_id, task_id, level, hint_text) VALUES (?, ?, ?, ?, ?)').run(crypto.randomUUID(), userId, taskId, nextLevel, hintText);
+      if (nextLevel >= 3) {
+          db.prepare('UPDATE projects SET cheat_score = cheat_score + 5 WHERE id=?').run(projectId);
+      }
+
       return {
-        feedback: [],
-        scaffold: typeof scaffoldResult === 'string' ? scaffoldResult : scaffoldResult?.hint || 'Think about the core concept needed here.',
-        level: directives.maxHintLevel || 3,
+        action: 'hint',
+        hint: hintText,
+        level: nextLevel,
         passed: false,
         mentorMode
       };
@@ -229,6 +282,11 @@ const learningController = {
       const passedQA = resultText.toLowerCase().includes('pass') || resultText.toLowerCase().includes('correct');
 
       if (passedQA) {
+        // [MEMORY] Record mastered concepts
+        const taskConcepts = JSON.parse(task?.concepts_taught || '[]');
+        taskConcepts.forEach(c => memoryService.markConceptLearned(projectId, c));
+        memoryService.updateLastAction(projectId, taskId, `Mastered task & concepts: ${taskConcepts.join(', ')}`, null);
+
         // FINALLY Mark Complete (OCC Race Condition Patched)
         const res = db.prepare(`UPDATE course_progress SET status = 'completed', completed_at = datetime('now'), updated_at = datetime('now') WHERE project_id = ? AND task_id = ? AND status = 'awaiting_explanation'`).run(projectId, taskId);
         
@@ -242,75 +300,61 @@ const learningController = {
       }
     }
 
-    // ── TYPE: CODE (DETERMINISTIC VALIDATION ONLY) ──────────────────
+    // ── TYPE: CODE (AI VALIDATION ENGINE) ──────────────────────────
     if (type === 'code') {
       if (!code || code.trim().length === 0) {
         return { action: 'retry', feedback: [{ type: 'error', message: 'No code submitted.' }], passed: false, mentorMode };
       }
 
-      const WorkspaceService = require('../services/workspaceService');
-      const courseService = require('../services/courseService');
-      const wsPath = WorkspaceService.getProjectPath(projectId);
-      
       const task = db.prepare('SELECT * FROM course_tasks WHERE id = ?').get(taskId)
                    || db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId);
 
-      // Deterministic Static Check
-      let validationResult = { passed: true };
-      try {
-        validationResult = courseService.validateStaticTask(task, wsPath);
-      } catch (e) {
-        validationResult = { passed: false, hint: e.message };
-      }
+      // 1. AI Behavioral & Logic Validation
+      const project = tracker.getProject(projectId);
+      const filePath = code.filePath || 'unknown'; // Frontend should provide this
+      const val = await TaskEngine.validateTask(task, code, filePath, project);
 
-      // Record Attempt & Awaiting Lock
-      if (validationResult.passed) {
+      // 2. Record Result in QA History (for Error Memory)
+      db.prepare(`
+          INSERT INTO qa_reviews (id, task_id, passed, feedback, failed_checks)
+          VALUES (?, ?, ?, ?, ?)
+      `).run(crypto.randomUUID(), taskId, val.success ? 1 : 0, val.feedback, JSON.stringify(val.failed_checks || []));
+
+      if (val.success) {
+        // [MEMORY] Lock state & move to explanation
         db.prepare(`UPDATE course_progress SET status = 'awaiting_explanation', attempts = attempts + 1, updated_at = datetime('now') WHERE project_id = ? AND task_id = ?`).run(projectId, taskId);
+        memoryService.updateLastAction(projectId, taskId, `Validated logic for: ${task.title}`);
 
         return { 
           action: 'explain', 
-          feedback: [{ type: 'success', message: 'Code tests passed! Now explain your logical approach.' }], 
-          passed: false, // Not complete yet, must explain
+          feedback: [{ type: 'success', message: val.feedback || 'Code validated! Now explain your logical approach.' }], 
+          passed: false, 
           mentorMode 
         };
       } else {
-        // Failed - Increment Attempt and Calculate Consistency Score (Normalized)
-        const crypto = require('crypto');
-        const rawErrorMessage = validationResult.hint || 'Code failed validation constraints.';
+        // 3. Handle Failure: Consistency & Pattern Detection
+        const rawErrorMessage = val.failed_checks?.join(', ') || val.feedback || 'Logic requirements not met.';
+        const errorHash = crypto.createHash('md5').update(rawErrorMessage.slice(0, 100)).digest('hex');
         
-        // Normalize Error: Strip dynamic stack traces, line numbers, timestamps, and large digits.
-        const normalizedError = rawErrorMessage
-            .replace(/:\d+:\d+/g, '')        // remove line:col
-            .replace(/at .*/g, '')           // strip stack traces
-            .replace(/\b\d{4,}\b/g, '')      // remove large dynamic numbers
-            .toLowerCase()
-            .trim()
-            .slice(0, 120);
-
-        const errorHash = crypto.createHash('md5').update(normalizedError).digest('hex');
+        memoryService.recordFailure(projectId, rawErrorMessage);
         
-        const cp = db.prepare('SELECT last_error_hash, failure_consistency FROM course_progress WHERE project_id = ? AND task_id = ?').get(projectId, taskId);
-        let cons = 0;
-        if (cp && cp.last_error_hash === errorHash) {
-            cons = (cp.failure_consistency || 0) + 1;
-        }
+        const cp = db.prepare('SELECT failure_consistency FROM course_progress WHERE project_id = ? AND task_id = ?').get(projectId, taskId);
+        const newCons = (cp?.failure_consistency || 0) + 1;
 
-        db.prepare(`UPDATE course_progress SET attempts = attempts + 1, updated_at = datetime('now'), last_error_hash = ?, failure_consistency = ? WHERE project_id = ? AND task_id = ?`).run(errorHash, cons, projectId, taskId);
+        db.prepare(`
+            UPDATE course_progress SET attempts = attempts + 1, updated_at = datetime('now'), last_error_hash = ?, failure_consistency = ? 
+            WHERE project_id = ? AND task_id = ?
+        `).run(errorHash, newCons, projectId, taskId);
 
-        // Targeted Scaffolding (Behavior + Skills over Linear)
-        const config = skillEngine.getAdaptiveConfig(userId);
-        let targetLevel = directives.maxHintLevel || 2;
+        // Targeted Scaffolding Logic
+        let level = 1;
+        if (newCons > 2) level = 2; // Provide slightly more help if repeating errors
         
-        if (cheatScore > 60) targetLevel = Math.max(targetLevel - 1, 1); // Cheater restriction
-        if (attempts >= 2 || config.avgSkill < 30) targetLevel = Math.min(targetLevel + 1, 4); // Adaptive support
-
-        const dynamicHint = scaffoldEngine.generateScaffold(taskId, targetLevel);
         return { 
-          action: 'guided', 
-          mode: 'guided',
-          feedback: [{ type: 'error', message: validationResult.hint || 'Code failed validation constraints.' }],
-          scaffold: typeof dynamicHint === 'string' ? dynamicHint : dynamicHint?.hint,
-          level: targetLevel,
+          action: 'retry', 
+          feedback: [{ type: 'error', message: val.feedback }],
+          failed_checks: val.failed_checks,
+          isStuck: newCons > 2,
           passed: false, 
           mentorMode 
         };

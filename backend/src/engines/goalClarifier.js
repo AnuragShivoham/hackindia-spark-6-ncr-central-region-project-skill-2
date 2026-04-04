@@ -4,38 +4,41 @@ const SYSTEM = `You are the AMIT-BODHIT Architect.
 Your goal is to transform user intent into a high-impact project configuration.
 
 RULES:
-1. **Refinement:** If the goal is too vague (e.g., "chatbot", "banking", "app", "website"), output "status": "needs_refinement" and 3 "refinement_options" (specific project models like "AI-powered Customer Support Bot" or "Banking API with JWT").
-2. **Setup:** If the intent is clear but parameters are missing, output "status": "needs_setup" and identify "missing" (skill, time, type, stack, features).
+1. **Refinement:** If the goal is too vague (e.g., "chatbot", "banking", "app", "website"), output "status": "needs_refinement" and 3 "refinement_options".
+2. **Clarification Phase:** If the intent is clear but you need to know the student AND project specifics, output "status": "needs_clarification" and 3-5 "questions".
+   - Questions should be natural: "What is your experience with Node.js?", "Who is the end-user?", "Do you need persistent storage?".
 3. **Deterministic Extraction:**
    - skill: beginner | intermediate | advanced
    - time: 3 | 7 | 14
    - type: api | fullstack | ai | cli
-   - stack: specific tech OR "not_sure"
+   - stack: specific tech list
    - features: list of 3-6 core functionalities
+   - learning_profile: { "motivation": "...", "prior_knowledge": "..." }
 
-4. **The Pitch:** ALWAYS provide a "confirmation_text" (e.g., "Architecture locked: You are building a [Name]...").
+4. **The Pitch:** ALWAYS provide a "confirmation_text".
 
 OUTPUT ONLY VALID JSON:
 {
-  "status": "clear" | "needs_setup" | "needs_refinement",
-  "missing": { "skill": true, "time": true, "type": true, "stack": true, "features": true },
+  "status": "clear" | "needs_clarification" | "needs_refinement",
+  "questions": [ { "id": "exp", "text": "..." }, { "id": "user", "text": "..." } ],
   "refinement_options": ["Option 1", "Option 2", "Option 3"],
-  "extracted": { "title": "...", "skill": "...", "time": 7, "type": "...", "stack": "...", "features": ["..."] },
+  "extracted": { "title": "...", "skill": "...", "time": 7, "type": "...", "stack": "...", "features": ["..."], "learning_profile": {} },
   "confirmation_text": "..."
 }`;
 
-
-
-
 async function clarifyGoal(rawGoal, history = []) {
   const msgs = [];
-  for (const turn of history) {
-    if (turn.questions) msgs.push({ role: 'assistant', content: JSON.stringify(turn) });
-    if (turn.answers)   msgs.push({ role: 'user',      content: JSON.stringify(turn) });
-  }
-  const userMsg = history.length === 0
-    ? `User goal: ${rawGoal}`
-    : `Original goal: ${rawGoal}\n\nLatest answers: ${JSON.stringify(history.at(-1))}`;
+  // Build history context for Claude
+  const context = history.map(h => JSON.stringify(h)).join("\n");
+  
+  const userMsg = `
+    User Goal: ${rawGoal}
+    Current History: ${context}
+    
+    If all parameters (skill, time, type, stack, features) are clear, proceed with status: "clear".
+    Otherwise, ask exactly enough questions to finalize the architecture.
+  `;
+  
   return callClaudeJSON(SYSTEM, userMsg, msgs, 1000);
 }
 

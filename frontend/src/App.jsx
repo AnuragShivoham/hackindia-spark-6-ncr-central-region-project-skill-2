@@ -24,7 +24,7 @@ import CourseBuilderPage from './pages/CourseBuilderPage';
 function Header() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { project, userName, token, avatar, logout, role } = useStore();
+  const { project, projectId, userName, token, avatar, logout, role } = useStore();
   const onDash = location.pathname === '/dashboard';
   const onLogin = location.pathname === '/login';
 
@@ -46,9 +46,10 @@ function Header() {
       
       {token && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 16 }}>
-          <button onClick={() => navigate('/projects')} style={navBtn('Projects', '/projects')}>
-            {role === 'mentor' ? 'My Progress' : 'Dashboard'}
-          </button>
+          <button onClick={() => navigate('/projects')} style={navBtn('Projects', '/projects')}>Projects</button>
+          {projectId && (
+            <button onClick={() => navigate('/dashboard')} style={navBtn('Dashboard', '/dashboard')}>Dashboard</button>
+          )}
           {role === 'student' && (
             <button onClick={() => navigate('/marketplace')} style={navBtn('Marketplace', '/marketplace')}>Marketplace</button>
           )}

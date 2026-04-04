@@ -259,6 +259,18 @@ db.exec(`
     requested_at TEXT DEFAULT (datetime('now'))
   );
 
+  CREATE TABLE IF NOT EXISTS project_memory (
+    project_id TEXT PRIMARY KEY REFERENCES projects(id),
+    task_id TEXT,
+    last_code_snapshot TEXT,
+    last_action TEXT,
+    concepts_json TEXT DEFAULT '[]', -- [ "express-setup", "routing" ]
+    failures_json TEXT DEFAULT '{}', -- { "TypeError": 4, "ECONNREFUSED": 2 }
+    reflections_json TEXT DEFAULT '[]', -- [ { "task": "...", "text": "..." } ]
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+` + `
   CREATE TABLE IF NOT EXISTS chat_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id TEXT NOT NULL REFERENCES projects(id),

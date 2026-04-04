@@ -21,11 +21,13 @@ function signToken(user) {
 }
 
 function upsertUser(email, name, extra = {}) {
-  let user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+  const normalizedEmail = String(email).toLowerCase();
+  let user = db.prepare('SELECT * FROM users WHERE email = ?').get(normalizedEmail);
+  
   if (!user) {
     const id = uuidv4();
     db.prepare('INSERT INTO users (id, email, name, role, google_id, avatar) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(id, email, name, extra.role || 'student', extra.google_id || null, extra.avatar || null);
+      .run(id, normalizedEmail, name, extra.role || 'student', extra.google_id || null, extra.avatar || null);
     user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
   } else {
     // Always update role if explicitly provided at login (supports role switching)
@@ -132,29 +134,43 @@ router.post('/google', wrap(async (req, res) => {
   const { credential, role } = req.body;
   if (!credential) return res.status(400).json({ error: 'credential required' });
 
+  console.log(`[Google Auth] Attempting token verification for role: ${role || 'unspecified'}`);
+
   // Verify the Google ID token by calling Google's tokeninfo endpoint
   let googleRes, payload;
   try {
-    googleRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${credential}`);
+    const googleVerifyUrl = `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`;
+    googleRes = await fetch(googleVerifyUrl);
     payload = await googleRes.json();
   } catch (e) {
-    console.error('[Google Auth Error] Fetch/JSON failed:', e.message);
+    console.error('[Google Auth Critical Error] Network/Fetch failed:', e.message);
     return res.status(500).json({ error: 'Failed to connect to Google Auth API: ' + e.message });
   }
 
   if (!googleRes.ok || payload.error) {
-    console.error('[Google Auth Error] Token invalid:', payload.error || googleRes.status);
-    return res.status(401).json({ error: 'Invalid Google token: ' + (payload.error || 'unknown') });
+    const errText = payload.error || `HTTP ${googleRes.status}`;
+    console.error(`[Google Auth Error] Token verification failed: ${errText}`, payload);
+    return res.status(401).json({ error: 'Invalid Google token: ' + errText });
   }
+
+  // Audience validation
   if (config.GOOGLE_CLIENT_ID && payload.aud !== config.GOOGLE_CLIENT_ID) {
+    console.error('[Google Auth Error] Audience mismatch:', { got: payload.aud, expected: config.GOOGLE_CLIENT_ID });
     return res.status(401).json({ error: 'Token audience mismatch' });
   }
 
   const { email, name, sub: google_id, picture: avatar } = payload;
-  const user = upsertUser(email, name, { google_id, avatar, role });
   
-  // Role is handled by upsertUser above (supports returning users switching roles)
+  if (!email) {
+    return res.status(401).json({ error: 'Google account missing email address.' });
+  }
 
+  console.log(`[Google Auth Success] User: ${email}`);
+
+  // Consistently lowercase email to prevent SQLite UNIQUE collisions across case-sensitivity boundaries
+  const normalizedEmail = email.toLowerCase();
+  const user = upsertUser(normalizedEmail, name || email.split('@')[0], { google_id, avatar, role });
+  
   const token = signToken(user);
   res.json({ token, user });
 }));

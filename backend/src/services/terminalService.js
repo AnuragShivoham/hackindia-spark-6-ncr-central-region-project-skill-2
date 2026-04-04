@@ -67,7 +67,16 @@ function setupTerminalWS(wss, authenticate) {
         const parsed = JSON.parse(msg);
 
         if (parsed.type === 'input') {
-          // Send raw strokes directly to PTY - intercepting keystrokes breaks ANSI shells
+          // [SECURITY GUARD] Block destructive/dangerous commands
+          const executionService = require('./executionService');
+          if (executionService.isDangerous(parsed.data)) {
+            ws.send(JSON.stringify({ 
+                type: 'output', 
+                data: '\r\n\x1b[31;1m[SAFETY BLOCK] AMIT-BODHIT has intercepted a destructive command patterns.\x1b[0m\r\n' 
+            }));
+            return;
+          }
+          // Send raw strokes directly to PTY
           ptyProcess.write(parsed.data);
         } else if (parsed.type === 'resize') {
           ptyProcess.resize(parsed.cols || 80, parsed.rows || 24);
