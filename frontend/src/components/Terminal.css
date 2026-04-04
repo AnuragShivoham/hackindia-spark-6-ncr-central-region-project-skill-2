@@ -1,0 +1,100 @@
+/* frontend/src/components/Terminal.css */
+
+.terminal-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #0d1117;
+  border-top: 1px solid #30363d;
+  font-family: 'Fira Code', 'Courier New', monospace;
+}
+
+.terminal-controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: #161b22;
+  border-bottom: 1px solid #30363d;
+  font-size: 12px;
+}
+
+.terminal-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #8b949e;
+}
+
+.status-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #da3633;
+  transition: background 0.3s;
+}
+
+.status-indicator.connected {
+  background: #3fb950;
+}
+
+.terminal-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.terminal-btn {
+  padding: 4px 8px;
+  background: transparent;
+  border: 1px solid #30363d;
+  color: #8b949e;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.terminal-btn:hover {
+  background: #21262d;
+  border-color: #58a6ff;
+  color: #58a6ff;
+}
+
+.terminal-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(218, 54, 51, 0.1);
+  border-bottom: 1px solid #da3633;
+  color: #f85149;
+  font-size: 12px;
+}
+
+.terminal-error button {
+  padding: 2px 6px;
+  background: #da3633;
+  color: white;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 11px;
+  margin-left: auto;
+}
+
+.terminal-error button:hover {
+  background: #f85149;
+}
+
+.xterm-wrapper {
+  flex: 1;
+  overflow: hidden;
+  padding: 8px;
+}
+
+.xterm {
+  height: 100%;
+}
