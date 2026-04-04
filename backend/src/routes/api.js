@@ -125,8 +125,17 @@ router.post('/goals/submit', wrap(async (req, res) => {
     });
   }
 
-  if (result.status === 'needs_setup' || result.missing) {
+  if (result.status === 'needs_clarification' || result.questions) {
+    db.prepare("UPDATE projects SET status='clarifying' WHERE id=?").run(project.id);
+    return res.status(201).json({ 
+      action: 'clarify', 
+      message: result.confirmation_text || "Identifying discovery questions...", 
+      project: tracker.getProject(project.id), 
+      questions: result.questions || []
+    });
+  }
 
+  if (result.status === 'needs_setup' || result.missing) {
     tracker.setClarification(project.id, [{ missing: result.missing, extracted: result.extracted }], 1);
     return res.status(201).json({ 
       action: 'setup', 
@@ -168,6 +177,17 @@ router.post('/goals/clarify', wrap(async (req, res) => {
   if (result.status === 'rejected') {
     return res.json({ action: 'rejected', message: `Rejected: ${result.reason}` });
   }
+  if (result.status === 'needs_clarification' || result.questions) {
+    history.push({ questions: result.questions });
+    tracker.setClarification(project_id, history, project.clarification_round + 1);
+    return res.json({ 
+      action: 'clarify', 
+      message: result.confirmation_text || "Refining project setup...", 
+      project: tracker.getProject(project_id), 
+      questions: result.questions
+    });
+  }
+
   if (result.status === 'needs_setup' || result.missing) {
     history.push({ missing: result.missing, extracted: result.extracted });
     tracker.setClarification(project_id, history, project.clarification_round + 1);
@@ -267,35 +287,53 @@ router.get('/courses/:id', wrap(async (req, res) => {
   res.json(structure);
 }));
 
-router.post('/courses/:id/start', wrap(async (req, res) => {
-  const courseId = req.params.id;
-  const courseInfo = courseService.getCourse(courseId);
+router.post('/marketplace/:id/start', wrap(async (req, res) => {
+  const marketplaceId = req.params.id;
+  const db = require('../db/database');
   
-  if (!courseInfo || !courseInfo.is_active) {
-    return res.status(404).json({ error: 'Course unavailable' });
+  // 1. Check if it's an Official Course
+  const courseInfo = courseService.getCourse(marketplaceId);
+  if (courseInfo && courseInfo.is_active) {
+    const { v4: uuidv4 } = require('uuid');
+    const projId = uuidv4();
+    db.prepare(`
+      INSERT INTO projects (id, user_id, title, raw_goal, course_id, is_course, course_version, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'active')
+    `).run(projId, req.user.id, courseInfo.title, `Course: ${courseInfo.title}`, courseInfo.id, 1, courseInfo.version);
+    
+    // Physical setup
+    WorkspaceService.createProjectWorkspace(projId);
+    WorkspaceService.initializeProjectStructure(projId, 'nodejs');
+    tracker.setActiveProject(req.user.id, projId);
+    return res.json({ success: true, project_id: projId });
   }
 
-  // Create Project Instance (Reference Model)
-  const { v4: uuidv4 } = require('uuid');
-  const projId = uuidv4();
-  
-  db.prepare(`
-    INSERT INTO projects (id, user_id, raw_goal, course_id, is_course, course_version, status)
-    VALUES (?, ?, ?, ?, 1, ?, 'active')
-  `).run(
-    projId, 
-    req.user.id, 
-    `Course: ${courseInfo.title}`,
-    courseInfo.id, 
-    courseInfo.version
-  );
+  // 2. Check if it's a Community Project Idea
+  const communityProj = db.prepare('SELECT * FROM community_projects WHERE id = ? AND status = ?').get(marketplaceId, 'approved');
+  if (communityProj) {
+    const p = tracker.createProject(req.user.id, communityProj.description);
+    db.prepare('UPDATE projects SET title = ?, tech_stack = ?, skill_level = ?, deliverables = ?, status = ? WHERE id = ?')
+      .run(communityProj.title, communityProj.tech_stack, communityProj.difficulty, communityProj.final_outcome, 'planning', p.id);
+    
+    // Auto-generate milestones immediately
+    const extracted = {
+      title: communityProj.title,
+      stack: JSON.parse(communityProj.tech_stack || '[]'),
+      scope: communityProj.description,
+      time: communityProj.estimated_hours / 8, // hours to days
+      skill: communityProj.difficulty,
+      features: [communityProj.final_outcome]
+    };
+    
+    const planData = await milestoneGenerator.generateMilestones(extracted);
+    const milestones = planData.milestones || planData;
+    
+    // Finalize and Activate automatically
+    await finalizeActivation(res, p.id, milestones);
+    return; // finalizeActivation sends the response
+  }
 
-  // Initialize Physical Workspace
-  WorkspaceService.createProjectWorkspace(projId);
-  WorkspaceService.initializeProjectStructure(projId, 'nodejs');
-  
-  tracker.setActiveProject(req.user.id, projId);
-  res.json({ success: true, project_id: projId });
+  res.status(404).json({ error: 'Project not found in marketplace' });
 }));
 
 router.post('/courses/tasks/:id/submit', wrap(async (req, res) => {
@@ -723,8 +761,26 @@ router.post('/tasks/:id/start', wrap(async (req, res) => {
       
       if (!projectId) return res.status(400).json({ error: 'Missing projectId' });
 
-      const prog = db.prepare('SELECT * FROM course_progress WHERE project_id = ? AND task_id = ?').get(projectId, courseTask.id);
-      
+      // [MEMORY] Sync current task and last action
+      const memoryService = require('../services/memoryService');
+      memoryService.updateLastAction(projectId, courseTask.id, `Starting task: ${courseTask.title}`);
+
+      // [PHASE 11] Progression Lock
+      const incompletePrev = db.prepare(`
+          SELECT ct.title FROM course_tasks ct
+          LEFT JOIN course_progress cp ON cp.task_id = ct.id AND cp.project_id = ?
+          WHERE ct.course_id = ? AND ct.position < ? AND (cp.status IS NULL OR cp.status != 'completed')
+          LIMIT 1
+      `).get(projectId, courseTask.course_id, courseTask.position);
+
+      if (incompletePrev) {
+          return res.status(403).json({ 
+              error: 'Progression Lock', 
+              message: `Wait up! You haven't mastered "${incompletePrev.title}" yet. Focus on that first to ensure a solid foundation.`,
+              unlock_required: incompletePrev.title
+          });
+      }
+
       if (prog && !['pending', 'failed'].includes(prog.status)) {
           return res.status(400).json({ error: `Cannot start task with status: ${prog.status}` });
       }
@@ -783,7 +839,7 @@ router.post('/tasks/:id/hint', wrap(async (req, res) => {
 }));
 
 router.post('/tasks/:id/ask', wrap(async (req, res) => {
-  const { question, activeFileContent, activeFilePath, image } = req.body;
+  const { question, activeFileContent, activeFilePath, image, context } = req.body;
   const taskId = req.params.id;
   if (!question && !image) return res.status(400).json({ error: 'question or image required' });
 
@@ -798,7 +854,8 @@ router.post('/tasks/:id/ask', wrap(async (req, res) => {
     const history = tracker.getTaskConversation(taskId, 10).map(t => ({ role: t.role, content: t.content }));
     const treeNodes = []; // Could populate via WorkspaceService
     
-    const guidance = await guidedExecution.getGuidance(courseTask, question || 'Help me with this task.', history, activeFileContent, activeFilePath, p, milestones, treeNodes, image);
+    // Pass behavioral mode (normal/suspicious/restricted)
+    const guidance = await guidedExecution.getGuidance(courseTask, question || 'Help me with this task.', history, activeFileContent, activeFilePath, p, milestones, treeNodes, image, context?.mode);
     tracker.logTurn(p.id, 'user', question, 'task_guidance', taskId);
     tracker.logTurn(p.id, 'mentor', guidance, 'task_guidance', taskId);
     return res.json({ action: 'task_guidance', message: guidance, task: courseTask });
@@ -814,13 +871,150 @@ router.post('/tasks/:id/ask', wrap(async (req, res) => {
   let treeNodes = [];
   try { if (project) treeNodes = WorkspaceService.listFiles(project.id); } catch(e) {}
   
-  const guidance = await guidedExecution.getGuidance(task, question || 'Analyze this screenshot and help me fix the error.', history, activeFileContent, activeFilePath, project, milestones, treeNodes, image);
+  const guidance = await guidedExecution.getGuidance(task, question || 'Analyze this screenshot and help me fix the error.', history, activeFileContent, activeFilePath, project, milestones, treeNodes, image, context?.mode);
   
   if (project) {
     tracker.logTurn(project.id, 'user',   question, 'task_guidance', task.id);
     tracker.logTurn(project.id, 'mentor', guidance, 'task_guidance', task.id);
   }
   res.json({ action: 'task_guidance', message: guidance, task });
+}));
+
+router.get('/projects/:id/progress', wrap(async (req, res) => {
+  const projectId = req.params.id;
+  const memoryService = require('../services/memoryService');
+  
+  const project = tracker.getProject(projectId);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+
+  const milestones = tracker.getProjectMilestones(projectId);
+  const memory = memoryService.getMemory(projectId);
+  const currentTaskId = project.current_task_id;
+  
+  // 1. Current Focus: Deep Analysis
+  let currentFocus = { title: "Initializing...", status: "pending", missing: [] };
+  if (currentTaskId) {
+    const taskData = db.prepare(`
+        SELECT ct.title, cp.status, cp.attempts 
+        FROM course_tasks ct
+        JOIN course_progress cp ON cp.task_id = ct.id
+        WHERE cp.project_id = ? AND ct.id = ?
+    `).get(projectId, currentTaskId);
+    
+    if (taskData) {
+      // Analyze history to find "missing pieces" from latest review
+      const latestReview = db.prepare(`
+        SELECT failed_checks FROM qa_reviews 
+        WHERE task_id = ? ORDER BY created_at DESC LIMIT 1
+      `).get(currentTaskId);
+      
+      const missing = latestReview ? JSON.parse(latestReview.failed_checks || '[]') : ["Implementation details pending"];
+
+      currentFocus = {
+        title: taskData.title,
+        status: taskData.status,
+        attempts: taskData.attempts,
+        missing: missing.slice(0, 3) 
+      };
+    }
+  }
+
+  // 2. Timeline with Unlock Conditions
+  const timeline = milestones.map(m => {
+    const isCompleted = m.status === 'completed';
+    const conditions = !isCompleted ? db.prepare(`
+        SELECT title FROM course_tasks ct
+        JOIN course_progress cp ON cp.task_id = ct.id
+        WHERE ct.milestone_id = ? AND cp.project_id = ? AND cp.status != 'completed'
+    `).all(m.id, projectId).map(c => c.title) : [];
+
+    return {
+      id: m.id,
+      title: m.title,
+      status: m.status,
+      unlockConditions: conditions.slice(0, 2)
+    };
+  });
+
+  // 3. Skill Map with Action Triggers
+  const failures = memory ? memory.failures : {};
+  const skills = (memory ? memory.concepts : []).map(c => {
+    const errorCount = failures[c] || 0;
+    const reason = memoryService.getSkillReason(c, failures);
+    
+    let level = 'Strong';
+    let action = 'Mastered';
+    if (errorCount > 2) { level = 'Medium'; action = 'Strengthen implementation pattern'; }
+    if (errorCount > 5) { level = 'Weak'; action = 'Redo logic without hints next time'; }
+    
+    return { name: c, level, reason, action };
+  });
+
+  // 4. Error Memory (Pattern Awareness)
+  const allRecentFailures = db.prepare(`
+    SELECT failed_checks FROM qa_reviews q
+    JOIN course_progress cp ON q.task_id = cp.task_id
+    WHERE cp.project_id = ? ORDER BY q.created_at DESC LIMIT 10
+  `).all(projectId);
+  
+  const patternCounts = {};
+  allRecentFailures.forEach(f => {
+    const checks = JSON.parse(f.failed_checks || '[]');
+    checks.forEach(check => patternCounts[check] = (patternCounts[check] || 0) + 1);
+  });
+  
+  const errorMemory = Object.entries(patternCounts)
+    .filter(([_, count]) => count >= 2)
+    .sort((a,b) => b[1] - a[1])
+    .map(([name, count]) => `${name} (${count} times)`)
+    .slice(0, 2);
+
+  // 5. Behavior Directives (Active Intervention)
+  let behaviorMode = 'Active Learning';
+  let directive = 'Keep following current flow';
+  
+  const cheat_score = project.cheat_score || 0;
+  if (cheat_score > 60) {
+    behaviorMode = 'Restricted (High Paste)';
+    directive = 'Implement next 2 functions manually without external code';
+  } else if (cheat_score > 30) {
+    behaviorMode = 'Guided Enhancement';
+    directive = 'Refine logic independently before requesting review';
+  }
+
+  // 6. Atomic Next Actions
+  let atomicNext = ["Open your primary file", "Focus on current technical goal"];
+  if (currentTaskId) {
+    atomicNext = [
+      `Complete ${currentFocus.title}`,
+      `Verify ${currentFocus.missing[0] || 'logic'}`,
+      "Run local tests"
+    ];
+  }
+
+  // 7. Stuck Detection Suggestion
+  const progRow = db.prepare('SELECT failure_consistency FROM course_progress WHERE project_id = ? AND task_id = ?').get(projectId, currentTaskId);
+  const isStuck = (progRow?.failure_consistency || 0) > 2;
+  const stuckSuggestion = isStuck 
+    ? `Break task into smaller pieces: first implement ${currentFocus.missing[0] || 'skeleton'}`
+    : null;
+
+  res.json({
+    currentFocus,
+    timeline,
+    skills,
+    errorMemory,
+    behaviorMode: { status: behaviorMode, directive },
+    nextActionItems: atomicNext,
+    isStuck,
+    stuckSuggestion
+  });
+}));
+
+router.get('/projects/:id/memory', wrap(async (req, res) => {
+  const memoryService = require('../services/memoryService');
+  const memory = memoryService.getMemory(req.params.id);
+  res.json(memory || { project_id: req.params.id, concepts: [], failures: {}, last_action: 'None' });
 }));
 
 router.post('/projects/:id/ask', wrap(async (req, res) => {
@@ -841,6 +1035,30 @@ router.post('/projects/:id/ask', wrap(async (req, res) => {
   tracker.logTurn(project.id, 'mentor', guidance, 'general_guidance');
   
   res.json({ action: 'general_guidance', message: guidance });
+}));
+
+router.post('/projects/:id/execute/run', wrap(async (req, res) => {
+  const executionService = require('../services/executionService');
+  const project = tracker.getProject(req.params.id);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+
+  const check = await learningController.preRunCheck(project.id);
+  if (!check.success) return res.json({ action: 'block', reason: check.reason });
+
+  const pType = executionService.getProjectType(project);
+  const command = executionService.getCommand(pType);
+
+  res.json({ action: 'run', command, projectType: pType });
+}));
+
+router.get('/projects/:id/execute/test', wrap(async (req, res) => {
+  const executionService = require('../services/executionService');
+  const project = tracker.getProject(req.params.id);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+
+  const pType = executionService.getProjectType(project);
+  const instructions = executionService.getTestingInstructions(pType, project.current_task_id);
+  res.json(instructions);
 }));
 
 // ─────────────────────────────────────────────────────────────────────────────
