@@ -1,4 +1,5 @@
 const { callClaude } = require('../db/claude');
+const memoryService = require('../services/memoryService');
 
 const GUIDE_SYSTEM = `You are AMIT-BODHIT execution guide.
 TEACH. Do NOT solve completely.
@@ -33,10 +34,24 @@ function formatTree(nodes, indent = '') {
   }).join('\n');
 }
 
-async function getGuidance(task, userQuestion, history = [], activeFileContent = null, activeFilePath = null, project = null, milestones = [], treeNodes = [], image = null) {
+async function getGuidance(task, userQuestion, history = [], activeFileContent = null, activeFilePath = null, project = null, milestones = [], treeNodes = [], image = null, mode = 'normal') {
   const stackList = project?.tech_stack ? (Array.isArray(project.tech_stack) ? project.tech_stack.join(', ') : project.tech_stack) : 'N/A';
+  
+  // Inject Behavioral Directives into System Prompt
+  let behavioralGuidance = '';
+  if (mode === 'restricted') {
+    behavioralGuidance = "\nADAPTIVE MODE: DEEP UNDERSTANDING REQUIRED. The user has added significant code quickly. DO NOT PROVIDE CODE OR SOLUTIONS. Ask the user to explain the logic of their current file first. Be polite but firm.";
+  } else if (mode === 'suspicious') {
+    behavioralGuidance = "\nADAPTIVE MODE: ACTIVE LEARNING. The user is moving fast. Use SOCRATIC QUESTIONING. Instead of 'Use X', ask 'What happens if we use X here?'. Guide, don't tell. Max 1 line of code per response.";
+  }
+
+  // PROJECT MEMORY: Ensure AI doesn't repeat already mastered concepts
+  const projectMemory = project ? memoryService.getMemoryPrompt(project.id) : '';
+
   let ctx = `Role: ${project?.user_role || 'Student'}
+${projectMemory}
 Project Name: ${project?.title}
+Main Objective: ${project?.raw_goal || 'N/A'}
 Tech Stack: ${stackList}
 Progress: ${project?.progress_pct}% (${project?.completed_tasks}/${project?.total_tasks} tasks)
 Task: ${task?.title || 'General Chat'}
@@ -45,7 +60,7 @@ Concepts: ${(task?.concepts_taught||[]).join(', ')}
 Commands: ${JSON.stringify(task?.commands||[])}`;
   
   if (milestones.length) {
-    ctx += `\n\nFull Milestone Plan:\n${milestones.map(m => `- ${m.title} [${m.status}]`).join('\n')}`;
+    ctx += `\n\nFull Milestone Roadmap:\n${milestones.map(m => `- ${m.title} [Status: ${m.status}]`).join('\n')}`;
   }
 
   if (treeNodes && treeNodes.length > 0) {
@@ -61,7 +76,8 @@ Commands: ${JSON.stringify(task?.commands||[])}`;
     { role: 'assistant', content: 'Understood. I am your AMIT-BODHIT Mentor. What is your question?' },
     ...history,
   ];
-  return callClaude(GUIDE_SYSTEM, userQuestion, msgs, 800, 0.2, false, image);
+
+  return callClaude(GUIDE_SYSTEM + behavioralGuidance, userQuestion, msgs, 800, 0.2, false, image);
 }
 
 async function getHint(task, attemptNumber) {
