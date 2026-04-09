@@ -123,6 +123,18 @@ function AppInner() {
   const { token, projectId, applyResponse, isRehydrating, setRehydrating } = useStore();
   
   useEffect(() => {
+    const handlePaste = (e) => {
+      // Allow pasting ONLY if the user is a mentor (admin) or if explicitly overriding
+      // But user said "Every where", so we block it.
+      e.preventDefault();
+      alert("Pasting is disabled to ensure authentic learning and code mastery. Please type your code.");
+    };
+
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, []);
+
+  useEffect(() => {
     console.log('[APP] Rehydration Effect - Token:', !!token, 'PID:', projectId);
     if (!token) {
       console.log('[APP] No token, stopping rehydration');
@@ -188,6 +200,7 @@ function AppInner() {
         <Route path="/" element={<HomeRedirect />} />
         <Route path="/projects" element={<ProtectedRoute><ProjectsPage /></ProtectedRoute>} />
         <Route path="/goal" element={<ProtectedRoute><GoalPage /></ProtectedRoute>} />
+        <Route path="/clarify" element={<ProtectedRoute><ClarifyPage /></ProtectedRoute>} />
         <Route path="/setup" element={<ProtectedRoute><SetupPage /></ProtectedRoute>} />
         <Route path="/confirm-plan" element={<ProtectedRoute><PlanConfirmationPage /></ProtectedRoute>} />
 

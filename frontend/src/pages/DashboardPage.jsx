@@ -3,7 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { useStore } from '../store';
 import { StatusBadge, ProgressBar, Spinner, TermBlock, FolderTree, QAPanel, CodeBlock } from '../components/UI';
+import ProgressPanel from '../components/ide/ProgressPanel';
 import { Paperclip, X, ShieldAlert, Zap } from 'lucide-react';
+import ExplainModal from '../components/mentor/ExplainModal';
 
 
 // ─── SIDEBAR ─────────────────────────────────────────────────────────────────
@@ -345,18 +347,47 @@ export default function DashboardPage() {
   const [tab, setTab] = useState('task');
   const [submitting, setSubm] = useState(false);
   const [error, setError] = useState('');
+  const [showExplain, setShowExplain] = useState(false);
+  const [pendingText, setPendingText] = useState('');
+  const [progressData, setProgressData] = useState(null);
+  const [loadingProgress, setLoadingProgress] = useState(false);
  
   useEffect(() => {
     if (project?.status === 'planning') navigate('/confirm-plan');
     if (project?.status === 'clarifying') navigate('/setup');
   }, [project, navigate]);
 
+  useEffect(() => {
+    if (tab === 'progress' && project?.id) {
+       const fetchProgress = async () => {
+         setLoadingProgress(true);
+         try {
+           const res = await api.getProjectProgress(project.id);
+           setProgressData(res);
+         } catch(e) { console.error(e); }
+         setLoadingProgress(false);
+       };
+       fetchProgress();
+    }
+  }, [tab, project?.id]);
+
 
 
   const handleSubmit = async (text) => {
+    setPendingText(text);
+    setShowExplain(true);
+  };
+
+  const handleFinishSubmit = async (explanation) => {
+    setShowExplain(false);
+    const text = pendingText;
     setSubm(true); setError(''); clearQA();
     try {
       if (project.is_course) {
+        // Send explanation along with the submission to the backend if needed, 
+        // or just log it for learning progress.
+        await api.learningProcess({ type: 'explain', taskId: currentTask.id, explanation });
+        
         const res = await api.submitCourseTask(currentTask.id, project.id);
         if (res.verdict === 'pass') {
           setSuccessMsg(`✓ Task Passed!`);
@@ -365,6 +396,8 @@ export default function DashboardPage() {
           setError(res.feedback || 'Validation failed.');
         }
       } else {
+        await api.learningProcess({ type: 'explain', taskId: currentTask.id, explanation });
+        
         const res = await api.submitTask(currentTask.id, text);
         applyResponse(res);
         if (res.action === 'project_complete') { navigate('/complete'); return; }
@@ -419,7 +452,12 @@ export default function DashboardPage() {
 
         {/* Tabs */}
         <div className="tabs">
-          {[['task', 'Current Task'], ['milestones', 'Milestones'], ['automations', `Automations (${(automations || []).length})`]].map(([id, label]) => (
+          {[
+            ['task', 'Current Task'], 
+            ['milestones', 'Milestones'], 
+            ['progress', 'Progress Analysis'],
+            ['automations', `Automations (${(automations || []).length})`]
+          ].map(([id, label]) => (
             <button key={id} className={`tab ${tab === id ? 'tab-a' : ''}`} onClick={() => setTab(id)}>{label}</button>
           ))}
         </div>
@@ -431,7 +469,16 @@ export default function DashboardPage() {
           </>
         )}
         {tab === 'milestones' && <MilestonesTab milestones={milestones} />}
+        {tab === 'progress' && <ProgressPanel data={progressData} loading={loadingProgress} />}
         {tab === 'automations' && <AutomationsTab automations={automations} />}
+        
+        {showExplain && (
+          <ExplainModal 
+            onClose={() => setShowExplain(false)} 
+            onSubmit={handleFinishSubmit} 
+            loading={submitting} 
+          />
+        )}
       </div>
     </div>
   );

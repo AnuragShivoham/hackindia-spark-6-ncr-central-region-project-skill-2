@@ -1,9 +1,23 @@
 import { useState } from 'react';
 import { X, Send, AlertCircle } from 'lucide-react';
 
-export default function ExplainModal({ onSubmit, onClose, loading }) {
+export default function ExplainModal({ onSubmit, onClose, loading, externalQuestion }) {
     const [text, setText] = useState('');
     const [error, setError] = useState('');
+    
+    const [question] = useState(() => {
+        if (externalQuestion) return externalQuestion;
+        const questions = [
+            "What is the most challenging part of this implementation?",
+            "How does your solution handle potential errors or edge cases?",
+            "Explain the logic behind the data structure you chose.",
+            "If you had to optimize this further, what would you change?",
+            "How do your changes interact with the existing system components?",
+            "What design pattern (if any) did you apply here and why?",
+            "Describe how you would test this specific piece of logic."
+        ];
+        return questions[Math.floor(Math.random() * questions.length)];
+    });
 
     const handleSubmit = () => {
         const trimmed = text.trim();
@@ -22,8 +36,13 @@ export default function ExplainModal({ onSubmit, onClose, loading }) {
         <div style={styles.overlay} onClick={onClose}>
             <div style={styles.modal} onClick={e => e.stopPropagation()}>
                 <div style={styles.header}>
-                    <h3 style={styles.title}>Explain Your Approach</h3>
+                    <h3 style={styles.title}>Progress Validation: Explain Your Approach</h3>
                     <button onClick={onClose} style={styles.closeBtn}><X size={16} /></button>
+                </div>
+
+                <div style={{ padding: '16px 20px 0', borderBottom: 'none' }}>
+                    <div style={{ fontSize: 11, color: 'var(--blue)', fontWeight: 800, textTransform: 'uppercase', marginBottom: 8 }}>Quick Question:</div>
+                    <div style={{ fontSize: 14, color: '#e6edf3', fontWeight: 600, lineHeight: 1.4 }}>{question}</div>
                 </div>
 
                 <p style={styles.hint}>Describe your thought process. What concept are you applying? Why did you choose this approach?</p>

@@ -130,13 +130,26 @@ const learningController = {
    * Converts a raw behavior score into a psychological state.
    */
   controlHints(cheatScore, attempts = 0) {
+    const questions = [
+        "What is the most challenging part of this implementation?",
+        "How does your solution handle potential errors or edge cases?",
+        "Explain the logic behind the data structure or algorithm you chose.",
+        "If you had to optimize this further, what would you change?",
+        "How do your changes interact with the existing system components?",
+        "What design pattern (if any) did you apply here and why?",
+        "Describe how you would test this specific piece of logic.",
+        "What trade-offs did you make during this task?"
+    ];
+    const randomQuestion = questions[Math.floor(Math.random() * questions.length)];
+
     if (cheatScore > 70) {
       return {
          action: 'restricted',
          label: 'Deep Understanding Required',
          color: '#f85149',
          maxHintLevel: 1, // Minimum help - explain first
-         message: "Before we continue, I want to make sure you've mastered this approach. Please explain how your current code handles the core logic of this task."
+         message: "Before we continue, I want to make sure you've mastered this approach. Please explain how your current code handles the core logic of this task.",
+         question: randomQuestion
       };
     }
     
@@ -146,7 +159,8 @@ const learningController = {
          label: 'Active Learning Mode',
          color: '#f2cc60',
          maxHintLevel: 2, // Intermediate - Socratic help
-         message: "You're making progress. Instead of giving the answer, I'll ask questions to help you find the logic yourself. Think: how should this component handle state?"
+         message: "You're making progress. Instead of giving the answer, I'll ask questions to help you find the logic yourself.",
+         question: randomQuestion
       };
     }
     
@@ -154,7 +168,8 @@ const learningController = {
       action: 'normal',
       label: 'Learning Mode',
       color: '#3fb950',
-      message: "Great work! I'm here if you need a specific hint or code review."
+      message: "Great work! I'm here if you need a specific hint or code review.",
+      question: randomQuestion
     };
   },
 

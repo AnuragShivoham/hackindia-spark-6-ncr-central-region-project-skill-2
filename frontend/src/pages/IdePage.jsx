@@ -349,12 +349,21 @@ export default function IDE() {
     };
 
     const handleEditorMount = (editor, monaco) => {
+        // BLOCK PASTE in Monaco
+        editor.onKeyDown((e) => {
+            if ((e.ctrlKey || e.metaKey) && e.keyCode === monaco.KeyCode.KeyV) {
+                e.preventDefault();
+                e.stopPropagation();
+                status("Pasting is disabled. Please type your code.", true);
+            }
+        });
+
         editor.onDidChangeModelContent((e) => {
             if (!project?.is_course) return;
             e.changes.forEach(change => {
                 if (change.text.length > 20) {
                     behaviorMetrics.current.pasteSize += change.text.length;
-                    // Force immediate sync on paste
+                    // Force immediate sync on paste (even if blocked, we track the attempt)
                     if (change.text.length > 50) syncTelemetry(true);
                 }
             });
