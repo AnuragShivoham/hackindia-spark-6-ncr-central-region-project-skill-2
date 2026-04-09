@@ -15,7 +15,8 @@ RULES:
    - features: list of 3-6 core functionalities
    - learning_profile: { "motivation": "...", "prior_knowledge": "..." }
 
-4. **The Pitch:** ALWAYS provide a "confirmation_text".
+4. **Flexibility:** If the user seems unsure, mentions "learning by doing", or asks to "just start", DO NOT ask more questions. Infer industry-standard defaults (e.g. React/Node for Fullstack).
+5. **The Pitch:** ALWAYS provide a "confirmation_text" that is encouraging and validating.
 
 OUTPUT ONLY VALID JSON:
 {
@@ -35,8 +36,9 @@ async function clarifyGoal(rawGoal, history = []) {
     User Goal: ${rawGoal}
     Current History: ${context}
     
-    If all parameters (skill, time, type, stack, features) are clear, proceed with status: "clear".
-    Otherwise, ask exactly enough questions to finalize the architecture.
+    CRITICAL: If the history contains previous answers, DO NOT ask more questions unless absolutely critical. 
+    Prioritize status: "clear" if you have enough to infer the skill, time, type, stack, and at least 3 features.
+    If you MUST ask, ask ONLY 1-2 highly targeted questions to bridge the gap.
   `;
   
   return callClaudeJSON(SYSTEM, userMsg, msgs, 1000);

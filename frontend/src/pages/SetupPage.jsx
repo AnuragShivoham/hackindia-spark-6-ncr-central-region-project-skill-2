@@ -15,7 +15,8 @@ import {
   Globe,
   Cpu,
   Terminal,
-  Info
+  Info,
+  Loader2
 } from 'lucide-react';
 
 export default function SetupPage() {
@@ -27,9 +28,9 @@ export default function SetupPage() {
   const { missing = {}, extracted = {}, message = "" } = location.state || {};
   const pid = project?.id || extracted?.id;
 
-  const [skill, setSkill] = useState('beginner');
-  const [time, setTime] = useState(7);
-  const [type, setType] = useState('fullstack');
+  const [skill, setSkill] = useState('');
+  const [time, setTime] = useState(null);
+  const [type, setType] = useState('');
   const [stack, setStack] = useState('');
   const [isStackAuto, setIsStackAuto] = useState(true);
   const [features, setFeatures] = useState([]);
@@ -66,10 +67,11 @@ export default function SetupPage() {
   };
 
   const handleSubmit = async () => {
-    if (features.length < 2) {
-      setError('Architect Tip: Define at least 2 core features for a valid plan.');
-      return;
-    }
+    if (!skill) { setError('Selection Required: Please choose your Experience Level.'); return; }
+    if (!time) { setError('Selection Required: Please specify a Time Commitment.'); return; }
+    if (!type) { setError('Selection Required: Please select a Project Model.'); return; }
+    if (isStackAuto && !stack) { setError('Stack Required: System is still calculating stack...'); return; }
+    if (!isStackAuto && !stack.trim()) { setError('Stack Required: Please define your custom tech stack.'); return; }
     
     setLoad(true);
     setError('');
@@ -92,6 +94,14 @@ export default function SetupPage() {
       } else if (res.action === 'plan_ready') {
         setSuccessMsg(res.message);
         navigate('/dashboard');
+      } else if (res.action === 'setup') {
+        setSuccessMsg(res.message);
+        navigate('/setup', { state: { ...res }, replace: true });
+      } else if (res.action === 'clarify') {
+        setSuccessMsg(res.message);
+        navigate('/clarify', { state: { questions: res.questions, projectId: pid, message: res.message } });
+      } else if (res.action === 'rejected') {
+        setError(res.message);
       }
     } catch(e) { 
       setError(e.message); 
@@ -164,22 +174,34 @@ export default function SetupPage() {
           </div>
         </section>
 
-        {/* 2. Duration */}
         <section>
           <span className="setup-label">02. Time Commitment</span>
           <div className="mcq-group">
             {[
               { id: 3, label: '3 Days', desc: 'Lightning Sprint (MVP Focus)', icon: <Zap size={20}/> },
               { id: 7, label: '7 Days', desc: 'Standard Build (Industry Flow)', icon: <Rocket size={20}/> },
-              { id: 14, label: '14 Days', desc: 'Deep Build (Production Grade)', icon: <Brain size={20}/> }
+              { id: 14, label: '14 Days', desc: 'Deep Build (Production Grade)', icon: <Brain size={20}/> },
+              { id: 'custom', label: 'Custom', desc: 'Define your own sprint length', icon: <Code size={20}/> }
             ].map(t => (
-              <button key={t.id} onClick={() => setTime(t.id)} className={`mcq-btn ${time === t.id ? 'active' : ''}`}>
+              <button key={t.id} onClick={() => setTime(t.id === 'custom' ? 0 : t.id)} className={`mcq-btn ${time === t.id || (t.id === 'custom' && ![3,7,14,null].includes(time)) ? 'active' : ''}`}>
                 <div className="icon-box">{t.icon}</div>
                 <div className="mcq-title">{t.label}</div>
                 <div className="mcq-desc">{t.desc}</div>
               </button>
             ))}
           </div>
+          {(![3, 7, 14, null].includes(time) || time === 0) && (
+            <div style={{ marginTop: 10 }}>
+              <input 
+                type="number" 
+                className="input" 
+                placeholder="Enter days (e.g. 10)" 
+                value={time === 0 ? '' : (time || '')}
+                onChange={e => setTime(parseInt(e.target.value) || 0)}
+                style={{ maxWidth: 200, background: '#0d1117', border: '1px solid #30363d', color: 'white' }}
+              />
+            </div>
+          )}
         </section>
 
         {/* 3. Project Type */}
@@ -258,7 +280,7 @@ export default function SetupPage() {
 
         <div style={{ display: 'flex', gap: 16, marginTop: 80, borderTop: '1px solid #21262d', paddingTop: 40 }}>
            <button className="btn-s" onClick={() => navigate('/goal')} style={{ border: 'none', background: 'transparent', color: '#8b949e' }}>Cancel</button>
-           <button className="btn-green" onClick={handleSubmit} disabled={loading || features.length < 2} style={{ flex: 1, height: 54, fontSize: 16, justifyContent: 'center' }}>
+           <button className="btn-green" onClick={handleSubmit} disabled={loading} style={{ flex: 1, height: 54, fontSize: 16, justifyContent: 'center' }}>
              {loading ? <Loader2 className="spin" size={22} /> : <>Generate Architect Roadmap <ChevronRight size={18} /></>}
            </button>
         </div>

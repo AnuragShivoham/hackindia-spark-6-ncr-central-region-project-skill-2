@@ -166,6 +166,21 @@ export default function ClarifyPage() {
                             </button>
                         </div>
                     </div>
+                    
+                    {/* Just Start Option */}
+                    {totalSteps > 0 && !loading && (
+                      <div style={{ marginTop: 24, textAlign: 'center', borderTop: '1px solid #21262d', paddingTop: 24 }}>
+                        <button 
+                          onClick={() => {
+                            setAnswers(prev => ({ ...prev, [currentQuestion?.id]: "I'm not exactly sure about the specific details yet, I want to start building and learn as I go. Please use your best architectural judgment to set up a professional roadmap for me." }));
+                            setTimeout(handleSubmit, 100);
+                          }}
+                          style={{ background: 'none', border: 'none', color: '#58a6ff', cursor: 'pointer', fontSize: 13, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 6, margin: '0 auto' }}
+                        >
+                          <Sparkles size={14} /> I'm not sure, just start with defaults & guide me
+                        </button>
+                      </div>
+                    )}
                 </div>
             </div>
 
@@ -201,8 +216,7 @@ const styles = {
         maxWidth: 680,
         padding: '32px 40px',
         boxShadow: '0 32px 64px rgba(0,0,0,0.5)',
-        position: 'relative',
-        overflow: 'hidden'
+        position: 'relative'
     },
     header: {
         display: 'flex',
@@ -265,9 +279,9 @@ const styles = {
         justifyContent: 'space-between',
         alignItems: 'center',
         borderTop: '1px solid #21262d',
-        margin: '0 -40px -32px -40px',
-        padding: '24px 40px',
-        background: 'rgba(1, 4, 9, 0.3)'
+        marginTop: 32,
+        paddingTop: 24,
+        background: 'transparent'
     },
     btnPrimary: {
         background: '#238636',

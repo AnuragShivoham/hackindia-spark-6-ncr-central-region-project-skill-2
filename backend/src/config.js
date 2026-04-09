@@ -13,7 +13,7 @@ module.exports = {
   GROQ_MODEL: 'llama-3.3-70b-versatile',
   LOCAL_MODEL: process.env.LOCAL_MODEL || 'phi3:mini', // Use phi3:mini for speed
   DB_PATH: process.env.DB_PATH || './data/amitbodhit.db',
-  MAX_CLARIFY_ROUNDS: 5,
+  MAX_CLARIFY_ROUNDS: 10,
   QA_PASS_SCORE: 0.70,
   JWT_SECRET: process.env.JWT_SECRET || 'amit-bodhit-secret-change-in-prod',
   GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID || '',
