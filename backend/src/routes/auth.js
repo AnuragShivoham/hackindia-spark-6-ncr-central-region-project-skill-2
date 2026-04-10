@@ -33,7 +33,7 @@ function upsertUser(email, name, extra = {}) {
     // Always update role if explicitly provided at login (supports role switching)
     const updates = [];
     const params = [];
-    if (extra.role && ['student', 'mentor'].includes(extra.role)) {
+    if (extra.role && ['student', 'mentor', 'admin'].includes(extra.role)) {
       updates.push('role=?');
       params.push(extra.role);
     }
@@ -186,7 +186,7 @@ router.put('/role', wrap(async (req, res) => {
   catch (e) { return res.status(401).json({ error: 'Invalid token' }); }
 
   const { role } = req.body;
-  if (!['student', 'mentor'].includes(role)) return res.status(400).json({ error: 'role must be student or mentor' });
+  if (!['student', 'mentor', 'admin'].includes(role)) return res.status(400).json({ error: 'role must be student, mentor, or admin' });
 
   db.prepare('UPDATE users SET role=? WHERE id=?').run(role, payload.id);
   const user = db.prepare('SELECT * FROM users WHERE id=?').get(payload.id);

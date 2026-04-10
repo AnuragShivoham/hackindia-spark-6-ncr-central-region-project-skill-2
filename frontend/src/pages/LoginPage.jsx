@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { GoogleLogin } from '@react-oauth/google';
-import { Mail, Shield, User, GraduationCap, ArrowRight, Loader2, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Mail, Shield, ShieldAlert, User, GraduationCap, ArrowRight, Loader2, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { api } from '../api/client';
 import { useStore } from '../store';
 
@@ -47,6 +47,8 @@ export default function LoginPage() {
       setAuth(res.user, res.token);
       if (res.user.role === 'mentor') {
         navigate('/mentor');
+      } else if (res.user.role === 'admin') {
+        navigate('/admin');
       } else {
         navigate('/projects');
       }
@@ -64,6 +66,8 @@ export default function LoginPage() {
       setAuth(res.user, res.token);
       if (res.user.role === 'mentor') {
         navigate('/mentor');
+      } else if (res.user.role === 'admin') {
+        navigate('/admin');
       } else {
         navigate('/projects');
       }
@@ -104,20 +108,27 @@ export default function LoginPage() {
           <div className="slide-down">
             <div style={{ marginBottom: 16 }}>
               <label className="lbl">Role Selection</label>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
                 <button 
                   onClick={() => setRole('student')}
                   className={`btn ${role === 'student' ? 'btn-p' : 'btn-g'}`}
-                  style={{ justifyContent: 'center' }}
+                  style={{ justifyContent: 'center', fontSize: 11 }}
                 >
                   <User size={14} /> Student
                 </button>
                 <button 
                   onClick={() => setRole('mentor')}
                   className={`btn ${role === 'mentor' ? 'btn-p' : 'btn-g'}`}
-                  style={{ justifyContent: 'center' }}
+                  style={{ justifyContent: 'center', fontSize: 11 }}
                 >
                   <Shield size={14} /> Mentor
+                </button>
+                <button 
+                  onClick={() => setRole('admin')}
+                  className={`btn ${role === 'admin' ? 'btn-p' : 'btn-g'}`}
+                  style={{ justifyContent: 'center', fontSize: 11 }}
+                >
+                  <ShieldAlert size={14} /> Admin
                 </button>
               </div>
             </div>

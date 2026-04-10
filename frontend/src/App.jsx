@@ -20,6 +20,7 @@ import MentorPage from './pages/MentorPage';
 import MarketplacePage from './pages/MarketplacePage';
 import ProjectDetailPage from './pages/ProjectDetailPage';
 import CourseBuilderPage from './pages/CourseBuilderPage';
+import AdminPage from './pages/AdminPage';
 
 function Header() {
   const location = useLocation();
@@ -58,6 +59,9 @@ function Header() {
               <button onClick={() => navigate('/mentor')} style={navBtn('Intervention', '/mentor')}>Intervention</button>
               <button onClick={() => navigate('/builder')} style={navBtn('Builder', '/builder')}>Course Builder</button>
             </>
+          )}
+          {role === 'admin' && (
+            <button onClick={() => navigate('/admin')} style={navBtn('Admin', '/admin')}>Platform Admin</button>
           )}
         </div>
       )}
@@ -106,15 +110,22 @@ function ProtectedRoute({ children }) {
 
 function MentorRoute({ children }) {
   const { token, role } = useStore();
-  const navigate = useNavigate();
   if (!token) return <Navigate to="/login" replace />;
-  if (role !== 'mentor') return <Navigate to="/projects" replace />;
+  if (role !== 'mentor' && role !== 'admin') return <Navigate to="/projects" replace />;
+  return children;
+}
+
+function AdminRoute({ children }) {
+  const { token, role } = useStore();
+  if (!token) return <Navigate to="/login" replace />;
+  if (role !== 'admin') return <Navigate to="/projects" replace />;
   return children;
 }
 
 function HomeRedirect() {
   const { token, role } = useStore();
   if (!token) return <Navigate to="/login" replace />;
+  if (role === 'admin') return <Navigate to="/admin" replace />;
   if (role === 'mentor') return <Navigate to="/mentor" replace />;
   return <Navigate to="/projects" replace />;
 }
@@ -124,10 +135,17 @@ function AppInner() {
   
   useEffect(() => {
     const handlePaste = (e) => {
-      // Allow pasting ONLY if the user is a mentor (admin) or if explicitly overriding
-      // But user said "Every where", so we block it.
+      // Allow pasting in standard inputs (like the Mentor Chat) but block in Code Editor
+      const target = e.target;
+      const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA';
+      
+      // Monaco editor uses a hidden textarea with class "inputarea"
+      if (isInput && !target.classList.contains('inputarea')) {
+          return; // Let normal inputs paste freely
+      }
+
       e.preventDefault();
-      alert("Pasting is disabled to ensure authentic learning and code mastery. Please type your code.");
+      alert("Code Pasting is disabled to ensure authentic learning and code mastery. Please type your code out manually.");
     };
 
     window.addEventListener('paste', handlePaste);
@@ -210,6 +228,7 @@ function AppInner() {
         <Route path="/mentor" element={<MentorRoute><MentorPage /></MentorRoute>} />
         <Route path="/builder" element={<MentorRoute><CourseBuilderPage /></MentorRoute>} />
         <Route path="/builder/:id" element={<MentorRoute><CourseBuilderPage /></MentorRoute>} />
+        <Route path="/admin" element={<AdminRoute><AdminPage /></AdminRoute>} />
         <Route path="/marketplace" element={<ProtectedRoute><MarketplacePage /></ProtectedRoute>} />
         <Route path="/marketplace/:id" element={<ProtectedRoute><ProjectDetailPage /></ProtectedRoute>} />
         <Route path="/complete" element={<ProtectedRoute><CompletePage /></ProtectedRoute>} />
