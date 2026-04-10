@@ -1,6 +1,7 @@
 const express = require('express');
 const router  = express.Router();
 const config  = require('../config');
+const { setupTerminalWS, authorizeCommand } = require('../services/terminalService');
 const tracker = require('../services/progressTracker');
 const goalClarifier     = require('../engines/goalClarifier');
 const milestoneGenerator = require('../engines/milestoneGenerator');
@@ -99,13 +100,33 @@ router.get('/users/:id', wrap(async (req, res) => {
 }));
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GOAL SUBMISSION + CLARIFICATION
+// AUTHENTICATION MIDDLEWARE (GLOBAL FOR PROTECTED ROUTES)
 // ─────────────────────────────────────────────────────────────────────────────
+router.use((req, res, next) => {
+  const publicRoutes = [
+    { method: 'POST', path: '/users' },
+    { method: 'GET',  path: '/users/:id' },
+    { method: 'GET',  path: '/courses' },
+    { method: 'GET',  path: '/marketplace' },
+    { method: 'POST', path: '/debug/log' }
+  ];
+  const isPublic = publicRoutes.find(r => r.method === req.method && (r.path === req.path || req.path.startsWith('/courses/')));
+  if (isPublic) return next();
+  
+  auth(req, res, next);
+});
+
+// Helper for project security
+const verifyProjectAccess = (project, user) => {
+  if (!project) return false;
+  if (project.user_id === user.id) return true;
+  if (user.role === 'mentor') return true;
+  return false;
+};
 router.post('/goals/submit', wrap(async (req, res) => {
   const { raw_goal } = req.body;
   const user_id = req.user.id;
   if (!raw_goal) return res.status(400).json({ error: 'raw_goal required' });
-  if (!tracker.getUser(user_id)) return res.status(404).json({ error: 'User not found' });
 
   const result = await goalClarifier.clarifyGoal(raw_goal);
 
@@ -460,17 +481,11 @@ router.get('/projects/latest', wrap(async (req, res) => {
   });
 }));
 
-router.get('/projects/:id', wrap(async (req, res) => {
-  if (req.params.id === 'latest') return; 
+router.get('/projects/:id', wrap(async (req, res, next) => {
+  if (req.params.id === 'latest') return next(); 
   const p = tracker.getProject(req.params.id);
-  if (!p) return res.status(404).json({ error: 'Project not found' });
   
-  const projectOwner = db.prepare('SELECT role FROM users WHERE id = ?').get(p.user_id);
-  const isOwner = p.user_id === req.user.id;
-  const isMentorOwner = projectOwner?.role === 'mentor';
-  const isReqMentor = req.user.role === 'mentor';
-  
-  if (!isOwner && !isMentorOwner && !isReqMentor) {
+  if (!verifyProjectAccess(p, req.user)) {
       return res.status(403).json({ error: 'Access denied' });
   }
   res.json(p);
@@ -486,15 +501,11 @@ router.get('/projects/:id/resume', wrap(async (req, res) => {
   if (!state) return res.status(404).json({ error: 'Project not found' });
   
   const { project } = state;
-  let { milestone, task } = state;
-  const projectOwner = db.prepare('SELECT role FROM users WHERE id = ?').get(project.user_id);
-  const isOwner = project.user_id === req.user.id;
-  const isMentorOwner = projectOwner?.role === 'mentor';
-  const isReqMentor = req.user.role === 'mentor';
-  
-  if (!isOwner && !isMentorOwner && !isReqMentor) {
+  if (!verifyProjectAccess(project, req.user)) {
     return res.status(403).json({ error: 'Access denied' });
   }
+
+  let { milestone, task } = state;
 
   tracker.setActiveProject(req.user.id, project.id);
 
@@ -781,7 +792,9 @@ router.post('/tasks/:id/start', wrap(async (req, res) => {
           });
       }
 
-      if (prog && !['pending', 'failed'].includes(prog.status)) {
+      const prog = db.prepare('SELECT * FROM course_progress WHERE project_id = ? AND task_id = ?').get(projectId, courseTask.id);
+
+      if (prog && !['pending', 'failed', 'in_progress'].includes(prog.status)) {
           return res.status(400).json({ error: `Cannot start task with status: ${prog.status}` });
       }
 
@@ -838,46 +851,45 @@ router.post('/tasks/:id/hint', wrap(async (req, res) => {
   res.json({ action: 'task_guidance', message: hint, task });
 }));
 
-router.post('/tasks/:id/ask', wrap(async (req, res) => {
+router.post('/projects/:id/ask', wrap(async (req, res) => {
   const { question, activeFileContent, activeFilePath, image, context } = req.body;
-  const taskId = req.params.id;
+  const projectId = req.params.id;
+  
   if (!question && !image) return res.status(400).json({ error: 'question or image required' });
 
-  const courseTask = db.prepare('SELECT * FROM course_tasks WHERE id = ?').get(taskId);
-  if (courseTask) {
-    const userRow = db.prepare('SELECT active_project_id FROM users WHERE id = ?').get(req.user.id);
-    const projectId = userRow?.active_project_id;
-    if (!projectId) return res.status(403).json({ error: 'No active project' });
+  const p = tracker.getProject(projectId);
+  if (!p) return res.status(404).json({ error: 'Project not found' });
+  if (p.user_id !== req.user.id && req.user.role !== 'mentor') return res.status(403).json({ error: 'Access denied' });
 
-    const p = tracker.getProject(projectId);
-    const milestones = tracker.getProjectMilestones(p.id); // Or course milestones?
-    const history = tracker.getTaskConversation(taskId, 10).map(t => ({ role: t.role, content: t.content }));
-    const treeNodes = []; // Could populate via WorkspaceService
-    
-    // Pass behavioral mode (normal/suspicious/restricted)
-    const guidance = await guidedExecution.getGuidance(courseTask, question || 'Help me with this task.', history, activeFileContent, activeFilePath, p, milestones, treeNodes, image, context?.mode);
-    tracker.logTurn(p.id, 'user', question, 'task_guidance', taskId);
-    tracker.logTurn(p.id, 'mentor', guidance, 'task_guidance', taskId);
-    return res.json({ action: 'task_guidance', message: guidance, task: courseTask });
-  }
+  // Determine if we are in a task context
+  const currentTaskId = p.current_task_id;
+  const courseTask = currentTaskId ? db.prepare('SELECT * FROM course_tasks WHERE id = ?').get(currentTaskId) : null;
+  const task = !courseTask && currentTaskId ? tracker.getTask(currentTaskId) : null;
 
-  const task = tracker.getTask(taskId);
-  if (!task) return res.status(404).json({ error: 'Task not found' });
+  const milestones = tracker.getProjectMilestones(p.id);
+  const history = tracker.getConversation(p.id, req.user.id, 10).map(t => ({ role: t.role, content: t.content }));
   
-  const ms = tracker.getMilestone(task.milestone_id);
-  const project = ms ? tracker.getProject(ms.project_id) : null;
-  const milestones = project ? tracker.getProjectMilestones(project.id) : [];
-  const history = tracker.getTaskConversation(task.id, 10).map(t => ({ role: t.role, content: t.content }));
   let treeNodes = [];
-  try { if (project) treeNodes = WorkspaceService.listFiles(project.id); } catch(e) {}
+  try { treeNodes = WorkspaceService.listFiles(p.id); } catch(e) {}
+
+  // Pass behavioral mode (normal/suspicious/restricted)
+  const guidance = await guidedExecution.getGuidance(courseTask || task, question || 'Help me with this.', history, activeFileContent, activeFilePath, p, milestones, treeNodes, image, context?.mode);
   
-  const guidance = await guidedExecution.getGuidance(task, question || 'Analyze this screenshot and help me fix the error.', history, activeFileContent, activeFilePath, project, milestones, treeNodes, image, context?.mode);
-  
-  if (project) {
-    tracker.logTurn(project.id, 'user',   question, 'task_guidance', task.id);
-    tracker.logTurn(project.id, 'mentor', guidance, 'task_guidance', task.id);
+  // Terminal Authorization Check
+  let authMsg = "";
+  const dangerousPatterns = ['rm', 'del', 'mv', 'rd', 'sudo', 'format', 'fdisk', ' > ', '> /dev', ':(){'];
+  if (question && (question.toLowerCase().includes('auth') || question.toLowerCase().includes('allow') || question.toLowerCase().includes('permission'))) {
+      const found = dangerousPatterns.find(p => question.toLowerCase().includes(p.trim()));
+      if (found) {
+          authorizeCommand(p.id, found.trim());
+          authMsg = `\r\n\r\n[SYSTEM]: I have authorized "${found.trim()}" for this session. Use carefully.`;
+      }
   }
-  res.json({ action: 'task_guidance', message: guidance, task });
+
+  tracker.logTurn(p.id, 'user', question || "[Image Upload]", 'task_guidance', currentTaskId);
+  tracker.logTurn(p.id, 'mentor', guidance + authMsg, 'task_guidance', currentTaskId);
+  
+  return res.json({ action: 'task_guidance', message: guidance + authMsg, task: courseTask || task });
 }));
 
 router.get('/projects/:id/progress', wrap(async (req, res) => {
@@ -1017,36 +1029,26 @@ router.get('/projects/:id/memory', wrap(async (req, res) => {
   res.json(memory || { project_id: req.params.id, concepts: [], failures: {}, last_action: 'None' });
 }));
 
-router.post('/projects/:id/ask', wrap(async (req, res) => {
-  const { question, activeFileContent, activeFilePath, image } = req.body;
-  if (!question && !image) return res.status(400).json({ error: 'question or image required' });
-  const project = tracker.getProject(req.params.id);
-  if (!project) return res.status(404).json({ error: 'Project not found' });
-
-  const milestones = tracker.getProjectMilestones(project.id);
-  const history = tracker.getConversation(project.id, req.user.id, 10).map(t => ({ role: t.role, content: t.content })).reverse();
-  
-  let treeNodes = [];
-  try { treeNodes = WorkspaceService.listFiles(project.id); } catch(e) {}
-
-  const guidance = await guidedExecution.getGuidance(null, question || 'Analyze this screenshot and help me fix the error.', history, activeFileContent, activeFilePath, project, milestones, treeNodes, image);
-  
-  tracker.logTurn(project.id, 'user',   question, 'general_guidance');
-  tracker.logTurn(project.id, 'mentor', guidance, 'general_guidance');
-  
-  res.json({ action: 'general_guidance', message: guidance });
-}));
+// (Duplicate /projects/:id/ask route removed, merged with the one above)
 
 router.post('/projects/:id/execute/run', wrap(async (req, res) => {
   const executionService = require('../services/executionService');
   const project = tracker.getProject(req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
 
+  const activeFilePath = req.body.activeFilePath;
+
   const check = await learningController.preRunCheck(project.id);
   if (!check.success) return res.json({ action: 'block', reason: check.reason });
 
   const pType = executionService.getProjectType(project);
-  const command = executionService.getCommand(pType);
+  
+  // Directly intercept HTML executions to trigger Live Preview instead of Terminal
+  if (activeFilePath && activeFilePath.toLowerCase().endsWith('.html')) {
+      return res.json({ action: 'preview', path: activeFilePath });
+  }
+
+  const command = executionService.getCommand(pType, activeFilePath, project.id);
 
   res.json({ action: 'run', command, projectType: pType });
 }));
@@ -1651,8 +1653,100 @@ router.post('/debug/log', (req, res) => {
   res.json({ ok: true });
 });
 
+// ================= PLATFORM ADMIN ENGINE =================
+
+const adminOnly = (req, res, next) => {
+  const role = req.user?.role || db.prepare('SELECT role FROM users WHERE id = ?').get(req.user?.id)?.role;
+  if (role !== 'admin') return res.status(403).json({ error: 'System Admin access required.' });
+  next();
+};
+
+// GET /admin/extensions
+router.get('/admin/extensions', wrap(async (req, res) => {
+  const exts = db.prepare('SELECT * FROM platform_extensions ORDER BY created_at DESC').all();
+  res.json(exts);
+}));
+
+// POST /admin/extensions
+router.post('/admin/extensions', adminOnly, wrap(async (req, res) => {
+  const { name, type, description, command } = req.body;
+  const crypto = require('crypto');
+  const id = crypto.randomUUID();
+  db.prepare(`INSERT INTO platform_extensions (id, name, type, description, command, is_active) VALUES (?, ?, ?, ?, ?, 1)`).run(id, name, type, description || '', command || '');
+  res.json({ success: true, id });
+}));
+
+// PUT /admin/extensions/:id/toggle
+router.put('/admin/extensions/:id/toggle', adminOnly, wrap(async (req, res) => {
+  const { is_active } = req.body;
+  db.prepare('UPDATE platform_extensions SET is_active = ? WHERE id = ?').run(is_active ? 1 : 0, req.params.id);
+  res.json({ success: true });
+}));
+
+// DELETE /admin/extensions/:id
+router.delete('/admin/extensions/:id', adminOnly, wrap(async (req, res) => {
+  db.prepare('DELETE FROM platform_extensions WHERE id = ?').run(req.params.id);
+  res.json({ success: true });
+}));
+
+// GET /extensions/public
+router.get('/extensions/public', wrap(async (req, res) => {
+  const exts = db.prepare('SELECT * FROM platform_extensions WHERE is_active = 1').all();
+  res.json(exts);
+}));
+
+// GET /admin/settings
+router.get('/admin/settings', adminOnly, wrap(async (req, res) => {
+  const rows = db.prepare('SELECT * FROM platform_settings').all();
+  const settings = {};
+  for (const r of rows) {
+    try { settings[r.key] = JSON.parse(r.value); } catch { settings[r.key] = r.value; }
+  }
+  res.json(settings);
+}));
+
+// PUT /admin/settings
+router.put('/admin/settings', adminOnly, wrap(async (req, res) => {
+  const entries = Object.entries(req.body);
+  for (const [key, value] of entries) {
+    const val = typeof value === 'string' ? value : JSON.stringify(value);
+    const existing = db.prepare('SELECT key FROM platform_settings WHERE key = ?').get(key);
+    if (existing) {
+      db.prepare("UPDATE platform_settings SET value = ?, updated_at = datetime('now') WHERE key = ?").run(val, key);
+    } else {
+      db.prepare("INSERT INTO platform_settings (key, value) VALUES (?, ?)").run(key, val);
+    }
+  }
+  res.json({ success: true });
+}));
+
+// GET /admin/stats
+router.get('/admin/stats', adminOnly, wrap(async (req, res) => {
+  const totalUsers = db.prepare('SELECT COUNT(*) as c FROM users').get().c;
+  const students = db.prepare("SELECT COUNT(*) as c FROM users WHERE role = 'student'").get().c;
+  const mentors = db.prepare("SELECT COUNT(*) as c FROM users WHERE role = 'mentor'").get().c;
+  const admins = db.prepare("SELECT COUNT(*) as c FROM users WHERE role = 'admin'").get().c;
+  const totalProjects = db.prepare('SELECT COUNT(*) as c FROM projects').get().c;
+  const activeProjects = db.prepare("SELECT COUNT(*) as c FROM projects WHERE status = 'active'").get().c;
+  const totalCourses = db.prepare('SELECT COUNT(*) as c FROM courses').get().c;
+  const activeCourses = db.prepare("SELECT COUNT(*) as c FROM courses WHERE is_active = 1").get().c;
+  const extensions = db.prepare('SELECT COUNT(*) as c FROM platform_extensions').get().c;
+  const communityPending = db.prepare("SELECT COUNT(*) as c FROM community_projects WHERE status = 'pending'").get().c;
+  res.json({ totalUsers, students, mentors, admins, totalProjects, activeProjects, totalCourses, activeCourses, extensions, communityPending });
+}));
+
+// GET /admin/users
+router.get('/admin/users', adminOnly, wrap(async (req, res) => {
+  const users = db.prepare('SELECT id, email, name, role, skill_level, created_at FROM users ORDER BY created_at DESC LIMIT 100').all();
+  res.json(users);
+}));
+
+// PUT /admin/users/:id/role
+router.put('/admin/users/:id/role', adminOnly, wrap(async (req, res) => {
+  const { role } = req.body;
+  if (!['student', 'mentor', 'admin'].includes(role)) return res.status(400).json({ error: 'Invalid role' });
+  db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, req.params.id);
+  res.json({ success: true });
+}));
+
 module.exports = router;
-
-
-
-

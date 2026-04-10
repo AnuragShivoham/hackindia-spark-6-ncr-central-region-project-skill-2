@@ -60,7 +60,7 @@ export const api = {
   askQuestion: (id, q, content, path, image, context) => post(`/tasks/${id}/ask`, { question: q, activeFileContent: content, activeFilePath: path, image, context }),
   getMemory: (id) => get(`/projects/${id}/memory`),
   getProjectProgress: (id) => get(`/projects/${id}/progress`),
-  runProject: (id) => post(`/projects/${id}/execute/run`),
+  runProject: (id, activeFilePath) => post(`/projects/${id}/execute/run`, { activeFilePath }),
   getTestInstructions: (id) => get(`/projects/${id}/execute/test`),
   askProjectQuestion: (id, q, content, path, image) => post(`/projects/${id}/ask`, { question: q, activeFileContent: content, activeFilePath: path, image }),
   submitTask: (tid, txt) => post('/tasks/submit', { task_id: tid, submission_text: txt }),
@@ -119,4 +119,16 @@ export const api = {
   builderUpdateTask: (id, data) => req('PUT', `/builder/task/${id}`, data),
   builderDeleteTask: (id) => req('DELETE', `/builder/task/${id}`),
   builderPublishCourse: (id) => post(`/builder/course/${id}/publish`),
+  
+  // Platform Admin
+  adminGetExtensions: () => get('/admin/extensions'),
+  adminAddExtension: (data) => post('/admin/extensions', data),
+  adminToggleExtension: (id, is_active) => req('PUT', `/admin/extensions/${id}/toggle`, { is_active }),
+  adminDeleteExtension: (id) => req('DELETE', `/admin/extensions/${id}`),
+  adminGetSettings: () => get('/admin/settings'),
+  adminUpdateSettings: (data) => req('PUT', '/admin/settings', data),
+  adminGetStats: () => get('/admin/stats'),
+  adminGetUsers: () => get('/admin/users'),
+  adminUpdateUserRole: (id, role) => req('PUT', `/admin/users/${id}/role`, { role }),
+  getPublicExtensions: () => get('/extensions/public'),
 };

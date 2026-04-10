@@ -11,29 +11,88 @@ class ExecutionService {
     }
 
     getProjectType(project) {
-        const stack = (project.tech_stack || []).join(',').toLowerCase();
-        if (stack.includes('react')) return 'frontend';
-        if (stack.includes('express') || stack.includes('node')) return 'backend';
-        if (stack.includes('python') || stack.includes('ml')) return 'python';
+        let stackArr = [];
+        let delivArr = [];
+        try { stackArr = typeof project.tech_stack === 'string' ? JSON.parse(project.tech_stack) : (project.tech_stack || []); } catch(e) {}
+        try { delivArr = typeof project.deliverables === 'string' ? JSON.parse(project.deliverables) : (project.deliverables || []); } catch(e) {}
+        
+        const stack = stackArr.join(',').toLowerCase();
+        const deliverables = delivArr.join(',').toLowerCase();
+        const combined = stack + deliverables;
+
+        if (combined.includes('react')) return 'frontend';
+        if (combined.includes('express') || combined.includes('node')) return 'backend';
+        if (combined.includes('java')) return 'java';
+        if (combined.includes('pandas') || combined.includes('numpy') || combined.includes('matplotlib') || combined.includes('python')) return 'python_ds';
+        if (combined.includes('ml')) return 'ml';
         return 'general';
     }
 
-    getCommand(projectType, customEntryFile = null) {
+    getCommand(projectType, customEntryFile = null, projectId = null) {
+        let prefix = '';
+        
+        // If a file is selected, determine its directory to detect sub-projects (like 'my-app')
+        if (customEntryFile) {
+            const dirParts = customEntryFile.split('/');
+            if (dirParts.length > 1) {
+                const subDir = dirParts[0]; 
+                prefix = `cd ${subDir} && `;
+            }
+            
+            // If they explicitly have a Node script open, run it directly
+            if (customEntryFile.endsWith('.js') && !customEntryFile.endsWith('App.js') && !customEntryFile.endsWith('index.js')) {
+                 return `${prefix}node ${dirParts.pop()}`;
+            }
+            if (customEntryFile.endsWith('.py')) {
+                 return `${prefix}python ${dirParts.pop()}`;
+            }
+            if (customEntryFile.endsWith('.java')) {
+                 const className = dirParts.pop().replace('.java', '');
+                 return `${prefix}javac ${className}.java && java ${className}`;
+            }
+        }
+
         switch (projectType?.toLowerCase()) {
             case 'frontend':
-                return 'npm run dev';
+                // For React/Vite: if they are in a subfolder like my-app, we cd first
+                return `${prefix}npm run dev || npm start`;
             case 'backend':
-                return customEntryFile ? `node ${customEntryFile}` : 'node server.js';
-            case 'python':
+                return `${prefix}node server.js || npm start`;
+            case 'java':
+                return `${prefix}javac Main.java && java Main`;
+            case 'python_ds':
             case 'ml':
-                return customEntryFile ? `python ${customEntryFile}` : 'python train.py';
+            case 'python':
+                return `${prefix}python main.py`;
             default:
-                return 'npm start';
+                return `${prefix}npm start`;
         }
     }
 
     getTestingInstructions(projectType, task) {
         // Guidance based on project context
+        if (projectType === 'java') {
+            return {
+                title: "Java Execution Check",
+                steps: [
+                    "Verify .class files are generated after compilation.",
+                    "Check for 'public static void main' entry point.",
+                    "Review console for JVM exceptions."
+                ],
+                executable: "java Main"
+            };
+        }
+        if (projectType === 'python_ds') {
+            return {
+                title: "Data Analysis Check",
+                steps: [
+                    "Inspect dataframes with df.head() in output.",
+                    "Check for generated .png or .sqllite files if applicable.",
+                    "Ensure numpy arrays match expected shapes."
+                ],
+                executable: "python -c 'import pandas; import numpy; print(\"DS Stack Ready\")'"
+            };
+        }
         if (projectType === 'backend') {
             return {
                 title: "Backend Verification",
