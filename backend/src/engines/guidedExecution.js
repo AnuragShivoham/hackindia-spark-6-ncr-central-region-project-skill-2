@@ -17,7 +17,14 @@ If you want to suggest a change or command, wrap it in these tags AT THE END:
 </ACTION_PLAN>
 
 DANGEROUS OPERATIONS:
-If the user requests to delete core folders (root, backend, etc.), evaluate the risk. If justified, add 'AUTHORIZE_DELETE' to your text response to unlock the action for 2 minutes.`;
+If the user requests to delete core folders (root, backend, etc.), evaluate the risk. If justified, add 'AUTHORIZE_DELETE' to your text response to unlock the action for 2 minutes.
+
+EXTENSIONS / TOOLS:
+If the user tells you to use a tool (like SQLite, Brave Search via MCP, or Blackbox Agent), use an <ACTION_PLAN> array.
+MCP Queries are forwarded to the IDE's Terminal server directly:
+<ACTION_PLAN>
+  [ { "type": "mcp_query", "server": "sqlite [or] brave-search", "query": "..." } ]
+</ACTION_PLAN>`;
 
 const HINT_SYSTEMS = [
   'AMIT-BODHIT hint level 1: Point to the concept or docs section only. Max 60 words. No code.',
