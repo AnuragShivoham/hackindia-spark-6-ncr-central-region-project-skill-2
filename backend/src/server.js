@@ -12,6 +12,7 @@ const authRouter = require('./routes/auth');
 const authMiddleware = require('./middleware/auth');
 const { setupTerminalWS } = require('./services/terminalService');
 const { handleConnection, initHeartbeat } = require('./services/socketService');
+const previewRouter = require('./routes/preview');
 
 const app = express();
 
@@ -25,6 +26,7 @@ app.use((req, res, next) => {
 });
 
 app.get('/health', (req, res) => res.json({ status: 'ok', service: 'AMIT-BODHIT', version: '1.0.0' }));
+app.use('/api/v1/preview', previewRouter);
 app.use('/api/v1/auth', authRouter);
 app.use('/api/v1/fs', authMiddleware, fsRouter);
 app.use('/api/v1', authMiddleware, apiRouter);

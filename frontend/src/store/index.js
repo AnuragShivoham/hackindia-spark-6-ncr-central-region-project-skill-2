@@ -101,7 +101,10 @@ export const useStore = create((set, get) => ({
     if (res.qa_review)  u.qaReview   = res.qa_review;
     if (res.automations?.length) u.automations = [...get().automations, ...res.automations];
     if (res.conversation) {
-        u.chatLog = res.conversation.map(c => ({ role: c.role, content: c.content }));
+        u.chatLog = res.conversation.map(c => ({ role: c.role, content: c.content })).reverse();
+    } else if (res.project && res.project.id !== get().projectId) {
+        // Clear log if switching projects and no history returned
+        u.chatLog = [];
     }
     set(u);
   },

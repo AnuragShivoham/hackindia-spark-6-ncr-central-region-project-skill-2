@@ -90,16 +90,18 @@ class WorkspaceService {
             return !['node_modules', 'venv', '.git', '.DS_Store', 'Thumbs.db', '.venv'].includes(name);
           })
           .map(entry => {
-            const isDir = entry.isDirectory();
-            const nodePath = path.posix.join(relativePath, entry.name);
             const fullNodePath = path.join(currentPath, entry.name);
+            const stats = fs.lstatSync(fullNodePath);
+            const isDir = stats.isDirectory();
+            const nodePath = path.posix.join(relativePath, entry.name);
             
             return {
               name: entry.name,
               type: isDir ? 'directory' : 'file',
-              isDir: isDir, // explicitly added for IDE frontend compatibility
+              isDir: isDir, 
+              isDirectory: isDir,
               path: nodePath,
-              size: isDir ? null : fs.statSync(fullNodePath).size,
+              size: isDir ? null : stats.size,
               children: isDir ? walk(fullNodePath, nodePath) : undefined,
             };
           });

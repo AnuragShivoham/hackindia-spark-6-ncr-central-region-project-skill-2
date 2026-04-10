@@ -67,11 +67,12 @@ export default function SetupPage() {
   };
 
   const handleSubmit = async () => {
-    if (!skill) { setError('Selection Required: Please choose your Experience Level.'); return; }
-    if (!time) { setError('Selection Required: Please specify a Time Commitment.'); return; }
-    if (!type) { setError('Selection Required: Please select a Project Model.'); return; }
-    if (isStackAuto && !stack) { setError('Stack Required: System is still calculating stack...'); return; }
-    if (!isStackAuto && !stack.trim()) { setError('Stack Required: Please define your custom tech stack.'); return; }
+    if (!skill) { setError('Architect Requirement: Please choose your Experience Level.'); return; }
+    if (!time) { setError('Architect Requirement: Please specify a Time Commitment.'); return; }
+    if (!type) { setError('Architect Requirement: Please select a Project Model.'); return; }
+    if (isStackAuto && !stack) { setError('Architect Requirement: System is still calculating stack...'); return; }
+    if (!isStackAuto && !stack.trim()) { setError('Architect Requirement: Please define your custom tech stack.'); return; }
+    if (features.length < 1) { setError('Architect Requirement: Define at least 1 core feature for a valid plan.'); return; }
     
     setLoad(true);
     setError('');

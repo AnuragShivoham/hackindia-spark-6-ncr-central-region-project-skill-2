@@ -167,20 +167,6 @@ export default function ClarifyPage() {
                         </div>
                     </div>
                     
-                    {/* Just Start Option */}
-                    {totalSteps > 0 && !loading && (
-                      <div style={{ marginTop: 24, textAlign: 'center', borderTop: '1px solid #21262d', paddingTop: 24 }}>
-                        <button 
-                          onClick={() => {
-                            setAnswers(prev => ({ ...prev, [currentQuestion?.id]: "I'm not exactly sure about the specific details yet, I want to start building and learn as I go. Please use your best architectural judgment to set up a professional roadmap for me." }));
-                            setTimeout(handleSubmit, 100);
-                          }}
-                          style={{ background: 'none', border: 'none', color: '#58a6ff', cursor: 'pointer', fontSize: 13, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 6, margin: '0 auto' }}
-                        >
-                          <Sparkles size={14} /> I'm not sure, just start with defaults & guide me
-                        </button>
-                      </div>
-                    )}
                 </div>
             </div>
 

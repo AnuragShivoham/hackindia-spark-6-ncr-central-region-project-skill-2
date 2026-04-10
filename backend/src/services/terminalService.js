@@ -4,7 +4,29 @@ const pty = require('node-pty');
 const { v4: uuid } = require('uuid');
 const db = require('../db/database');
 const jwt = require('jsonwebtoken');
-const config = require('../config');/**
+const config = require('../config');
+const { v4: uuidv4 } = require('uuid');
+
+// In-memory project authorizations (Reset on server restart for security)
+const projectAuthorizations = new Map(); // projectId -> Set of keyword strings
+
+/**
+ * Grants temporary permission for a specific command keyword
+ */
+function authorizeCommand(projectId, keyword) {
+  if (!projectAuthorizations.has(projectId)) {
+    projectAuthorizations.set(projectId, new Set());
+  }
+  projectAuthorizations.get(projectId).add(keyword.toLowerCase());
+  
+  // Auto-expire after 10 minutes
+  setTimeout(() => {
+    const auths = projectAuthorizations.get(projectId);
+    if (auths) auths.delete(keyword.toLowerCase());
+  }, 10 * 60 * 1000);
+}
+
+/**
  * Setup WebSocket terminal connections
  */
 function setupTerminalWS(wss, authenticate) {
@@ -62,22 +84,44 @@ function setupTerminalWS(wss, authenticate) {
       }
     });
 
+    let commandBuffer = '';
+    const dangerousPatterns = ['rm', 'del', 'mv', 'rd', 'sudo', 'format', 'fdisk', ' > ', '> /dev', ':(){'];
+
     ws.on('message', (msg) => {
       try {
         const parsed = JSON.parse(msg);
 
         if (parsed.type === 'input') {
-          // [SECURITY GUARD] Block destructive/dangerous commands
-          const executionService = require('./executionService');
-          if (executionService.isDangerous(parsed.data)) {
-            ws.send(JSON.stringify({ 
-                type: 'output', 
-                data: '\r\n\x1b[31;1m[SAFETY BLOCK] AMIT-BODHIT has intercepted a destructive command patterns.\x1b[0m\r\n' 
-            }));
-            return;
+          const data = parsed.data;
+          
+          // Accumulate command buffer to inspect full lines
+          if (data === '\r' || data === '\n') {
+            const cmd = commandBuffer.trim().toLowerCase();
+            const isRisky = dangerousPatterns.some(p => cmd.includes(p));
+            
+            if (isRisky) {
+              const auths = projectAuthorizations.get(projectId);
+              const allowed = Array.from(auths || []).some(keyword => cmd.includes(keyword));
+              
+              if (!allowed) {
+                ws.send(JSON.stringify({ 
+                    type: 'output', 
+                    data: '\r\n\x1b[31;1m[SECURITY BLOCK] This command is restricted. Please ask your AI Mentor: "Authorize [command]" to run destructive actions.\x1b[0m\r\n' 
+                }));
+                ptyProcess.write('\u0015'); // Ctrl+U to clear line
+                commandBuffer = '';
+                return;
+              }
+            }
+            commandBuffer = '';
+          } else if (data === '\u007f' || data === '\b') { // Backspace
+            commandBuffer = commandBuffer.slice(0, -1);
+          } else if (data.length === 1) { // Single char
+            commandBuffer += data;
           }
+
           // Send raw strokes directly to PTY
-          ptyProcess.write(parsed.data);
+          ptyProcess.write(data);
         } else if (parsed.type === 'resize') {
           ptyProcess.resize(parsed.cols || 80, parsed.rows || 24);
         } else if (parsed.type === 'clear') {
@@ -122,4 +166,4 @@ function setupTerminalWS(wss, authenticate) {
   });
 }
 
-module.exports = { setupTerminalWS };
+module.exports = { setupTerminalWS, authorizeCommand };

@@ -106,7 +106,10 @@ const learningController = {
     try { files = WorkspaceService.listFiles(projectId); } catch(e) {}
 
     // 1. Manifest Presence
-    const stack = (project.tech_stack || []).join(',').toLowerCase();
+    let stackArr = [];
+    try { stackArr = typeof project.tech_stack === 'string' ? JSON.parse(project.tech_stack) : (project.tech_stack || []); } catch(e) { stackArr = []; }
+    const stack = stackArr.join(',').toLowerCase();
+    
     const isNode = stack.includes('react') || stack.includes('express') || stack.includes('node');
     const isPython = stack.includes('python') || stack.includes('ml');
 
