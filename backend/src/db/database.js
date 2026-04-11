@@ -24,6 +24,7 @@ db.exec(`
     role TEXT DEFAULT 'student',
     google_id TEXT,
     avatar TEXT,
+    tech_stack TEXT DEFAULT '[]',
     created_at TEXT DEFAULT (datetime('now'))
   );
 
@@ -275,6 +276,7 @@ db.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id TEXT NOT NULL REFERENCES projects(id),
     user_id TEXT NOT NULL REFERENCES users(id),
+    role TEXT DEFAULT 'student',
     content TEXT NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
@@ -320,6 +322,10 @@ if (!cols.includes('active_project_id')) {
   db.exec("ALTER TABLE users ADD COLUMN active_project_id TEXT");
   console.log('[DB] Migrated: added active_project_id to users');
 }
+if (!cols.includes('tech_stack')) {
+  db.exec("ALTER TABLE users ADD COLUMN tech_stack TEXT DEFAULT '[]'");
+  console.log('[DB] Migrated: added tech_stack to users');
+}
 
 const projInfo = db.prepare("PRAGMA table_info(projects)").all().map(c => c.name);
 if (!projInfo.includes('is_course')) {
@@ -341,6 +347,13 @@ if (!projInfo.includes('current_task_id'))         db.exec("ALTER TABLE projects
 if (!projInfo.includes('total_tasks'))     db.exec("ALTER TABLE projects ADD COLUMN total_tasks INTEGER DEFAULT 0");
 if (!projInfo.includes('completed_tasks')) db.exec("ALTER TABLE projects ADD COLUMN completed_tasks INTEGER DEFAULT 0");
 if (!projInfo.includes('progress_pct'))    db.exec("ALTER TABLE projects ADD COLUMN progress_pct REAL DEFAULT 0");
+if (!projInfo.includes('help_requested'))  db.exec("ALTER TABLE projects ADD COLUMN help_requested INTEGER DEFAULT 0");
+if (!projInfo.includes('last_help_request')) db.exec("ALTER TABLE projects ADD COLUMN last_help_request TEXT");
+if (!projInfo.includes('active_mentor_id')) db.exec("ALTER TABLE projects ADD COLUMN active_mentor_id TEXT");
+if (!projInfo.includes('requested_mentor_id')) db.exec("ALTER TABLE projects ADD COLUMN requested_mentor_id TEXT");
+if (!projInfo.includes('intervention_mode')) db.exec("ALTER TABLE projects ADD COLUMN intervention_mode TEXT DEFAULT 'none'");
+if (!projInfo.includes('mentor_hint')) db.exec("ALTER TABLE projects ADD COLUMN mentor_hint TEXT");
+if (!projInfo.includes('interventions_count')) db.exec("ALTER TABLE projects ADD COLUMN interventions_count INTEGER DEFAULT 0");
 if (!projInfo.includes('updated_at'))      db.exec("ALTER TABLE projects ADD COLUMN updated_at TEXT");
 
 // [V2 COURSE ENGINE MIGRATIONS (PHASE 10)]
@@ -440,5 +453,8 @@ if (!ctInfo2.includes('steps'))       db.exec("ALTER TABLE course_tasks ADD COLU
 if (!ctInfo2.includes('difficulty'))   db.exec("ALTER TABLE course_tasks ADD COLUMN difficulty TEXT DEFAULT 'easy'");
 if (!ctInfo2.includes('goal'))        db.exec("ALTER TABLE course_tasks ADD COLUMN goal TEXT");
 if (!ctInfo2.includes('commands'))    db.exec("ALTER TABLE course_tasks ADD COLUMN commands TEXT DEFAULT '[]'");
+
+const chatInfo = db.prepare("PRAGMA table_info(chat_history)").all().map(c => c.name);
+if (!chatInfo.includes('role')) db.exec("ALTER TABLE chat_history ADD COLUMN role TEXT DEFAULT 'student'");
 
 module.exports = db;

@@ -378,6 +378,63 @@ const learningController = {
         };
       }
     }
+  },
+  async getProjectProgress(projectId) {
+    const tracker = require('../services/progressTracker');
+    const project = tracker.getProject(projectId);
+    if (!project) return null;
+
+    // 1. Current Focus
+    const currentTask = project.current_task_id ? tracker.getTask(project.current_task_id) : null;
+    const focus = {
+        title: currentTask?.title || "No active task",
+        missing: []
+    };
+
+    // 2. Timeline
+    const milestones = tracker.getProjectMilestones(projectId);
+    const timeline = milestones.map(m => ({
+        id: m.id,
+        title: m.title,
+        status: m.status === 'completed' ? 'completed' : (m.status === 'in_progress' ? 'active' : 'locked'),
+        unlockConditions: m.status === 'locked' ? ["Complete previous milestone"] : []
+    }));
+
+    // 3. Skills
+    const skills = db.prepare('SELECT tool as name, benefit as action FROM automation_suggestions WHERE project_id = ?').all(projectId);
+    skills.forEach(s => s.level = 'Medium');
+
+    // 4. Stuck Logic
+    let isStuck = false;
+    let stuckSuggestion = "";
+    if (currentTask) {
+        const cp = db.prepare('SELECT attempts, help_requested, failure_consistency FROM course_progress WHERE project_id = ? AND task_id = ?').get(projectId, currentTask.id);
+        if (cp && (cp.attempts >= 3 || cp.failure_consistency > 2)) {
+            isStuck = true;
+            stuckSuggestion = "You have failed this task several times. Try breaking it down or request a Mentor SOS.";
+        }
+    }
+
+    // 5. Behavior
+    const behavior = db.prepare('SELECT cheat_score FROM behavior_logs WHERE user_id = ? ORDER BY created_at DESC LIMIT 1').get(project.user_id) || { cheat_score: 0 };
+    const hints = this.controlHints(behavior.cheat_score);
+
+    return {
+        currentFocus: focus,
+        timeline,
+        skills: skills.length > 0 ? skills : [
+            { name: "Logic Flow", level: "Strong", action: "Keep refining edge cases" },
+            { name: "Syntax", level: "Medium", action: "Review documentation" }
+        ],
+        errorMemory: memoryService.getRecentFailures ? memoryService.getRecentFailures(projectId) : [],
+        behaviorMode: {
+            status: hints.label,
+            directive: hints.message
+        },
+        nextActionItems: currentTask ? [currentTask.title, "Run tests", "Explain logic"] : ["Initialize project"],
+        isStuck,
+        stuckSuggestion
+    };
   }
 };
 

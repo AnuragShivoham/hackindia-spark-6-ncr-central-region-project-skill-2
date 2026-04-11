@@ -24,18 +24,33 @@ function upsertUser(email, name, extra = {}) {
   const normalizedEmail = String(email).toLowerCase();
   let user = db.prepare('SELECT * FROM users WHERE email = ?').get(normalizedEmail);
   
+  // Security Check: Only allow admin role if email is in whitelist
+  let targetRole = extra.role || 'student';
+  if (targetRole === 'admin') {
+    const isAdmin = config.ADMIN_EMAILS.includes(normalizedEmail);
+    if (!isAdmin) {
+      console.warn(`[Auth Security] Unauthorized admin attempt by ${normalizedEmail}`);
+      targetRole = user ? user.role : 'student'; // Fallback to current role or student
+    }
+  }
+
   if (!user) {
     const id = uuidv4();
     db.prepare('INSERT INTO users (id, email, name, role, google_id, avatar) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(id, normalizedEmail, name, extra.role || 'student', extra.google_id || null, extra.avatar || null);
+      .run(id, normalizedEmail, name, targetRole, extra.google_id || null, extra.avatar || null);
     user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
   } else {
     // Always update role if explicitly provided at login (supports role switching)
     const updates = [];
     const params = [];
     if (extra.role && ['student', 'mentor', 'admin'].includes(extra.role)) {
-      updates.push('role=?');
-      params.push(extra.role);
+      // Check permission for switching to admin
+      if (extra.role === 'admin' && !config.ADMIN_EMAILS.includes(normalizedEmail)) {
+        console.warn(`[Auth Security] User ${normalizedEmail} blocked from switching to ADMIN`);
+      } else {
+        updates.push('role=?');
+        params.push(extra.role);
+      }
     }
     if (extra.google_id && !user.google_id) {
       updates.push('google_id=?', 'avatar=?');
@@ -98,7 +113,7 @@ router.post('/send-otp', wrap(async (req, res) => {
     res.json({ success: true, message: 'OTP sent to ' + email });
   } catch (e) {
     console.error('[Auth] Email send failed:', e.message);
-    // In dev mode, log the OTP so the developer can see it, but DON'T return it to the client
+    // In dev mode, log the OTP so the developer can see it
     console.log(`\n[DEV ONLY] OTP for ${email}: ${otp}\n`);
     
     if (process.env.NODE_ENV !== 'production') {
@@ -107,6 +122,14 @@ router.post('/send-otp', wrap(async (req, res) => {
     res.status(500).json({ error: 'Failed to send email: ' + e.message });
   }
 }));
+
+function hydrateUser(user) {
+  if (!user) return null;
+  try {
+    user.tech_stack = typeof user.tech_stack === 'string' ? JSON.parse(user.tech_stack || '[]') : (user.tech_stack || []);
+  } catch(e) { user.tech_stack = []; }
+  return user;
+}
 
 // ─── POST /auth/verify-otp ────────────────────────────────────────────────────
 router.post('/verify-otp', wrap(async (req, res) => {
@@ -123,7 +146,13 @@ router.post('/verify-otp', wrap(async (req, res) => {
   // Mark used
   db.prepare('UPDATE otp_requests SET used=1 WHERE id=?').run(record.id);
 
-  const user = upsertUser(email.toLowerCase(), name || email.split('@')[0], { role });
+  const rawUser = upsertUser(email.toLowerCase(), name || email.split('@')[0], { role });
+  
+  if (role === 'admin' && rawUser.role !== 'admin') {
+    return res.status(403).json({ error: 'Access Denied: Your email is not authorized for Admin access.' });
+  }
+
+  const user = hydrateUser(rawUser);
   const token = signToken(user);
   res.json({ token, user });
 }));
@@ -169,8 +198,13 @@ router.post('/google', wrap(async (req, res) => {
 
   // Consistently lowercase email to prevent SQLite UNIQUE collisions across case-sensitivity boundaries
   const normalizedEmail = email.toLowerCase();
-  const user = upsertUser(normalizedEmail, name || email.split('@')[0], { google_id, avatar, role });
+  const rawUser = upsertUser(normalizedEmail, name || email.split('@')[0], { google_id, avatar, role });
   
+  if (role === 'admin' && rawUser.role !== 'admin') {
+    return res.status(403).json({ error: 'Access Denied: Your email is not authorized for Admin access.' });
+  }
+
+  const user = hydrateUser(rawUser);
   const token = signToken(user);
   res.json({ token, user });
 }));
@@ -188,8 +222,13 @@ router.put('/role', wrap(async (req, res) => {
   const { role } = req.body;
   if (!['student', 'mentor', 'admin'].includes(role)) return res.status(400).json({ error: 'role must be student, mentor, or admin' });
 
+  // Security Check for switching to admin
+  if (role === 'admin' && !config.ADMIN_EMAILS.includes(String(payload.email).toLowerCase())) {
+    return res.status(403).json({ error: 'Unauthorized: Your email is not whitelisted for Admin role' });
+  }
+
   db.prepare('UPDATE users SET role=? WHERE id=?').run(role, payload.id);
-  const user = db.prepare('SELECT * FROM users WHERE id=?').get(payload.id);
+  const user = hydrateUser(db.prepare('SELECT * FROM users WHERE id=?').get(payload.id));
   const newToken = signToken(user);
   res.json({ token: newToken, user });
 }));
@@ -202,7 +241,7 @@ router.get('/me', wrap(async (req, res) => {
   const token = authHeader.replace('Bearer ', '');
   try {
     const payload = jwt.verify(token, config.JWT_SECRET);
-    const user = db.prepare('SELECT * FROM users WHERE id=?').get(payload.id);
+    const user = hydrateUser(db.prepare('SELECT * FROM users WHERE id=?').get(payload.id));
     if (!user) return res.status(404).json({ error: 'User not found' });
     res.json({ user });
   } catch (e) {

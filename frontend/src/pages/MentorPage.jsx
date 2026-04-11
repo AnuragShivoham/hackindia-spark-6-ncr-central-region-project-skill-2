@@ -7,7 +7,7 @@ import { ArrowLeft, Loader2, Monitor, Lightbulb, MessageSquare, ShieldAlert, Max
 
 export default function MentorPage() {
     const navigate = useNavigate();
-    const { token, role } = useStore();
+    const { token, role, techStack, setAuth } = useStore();
 
     // --- Core State ---
     const [queue, setQueue] = useState([]);
@@ -18,8 +18,11 @@ export default function MentorPage() {
     const [selectedStudent, setSelectedStudent] = useState(null); // null = queue view, object = live session
     const [sessionContext, setSessionContext] = useState(null);
     const [joining, setJoining] = useState(false);
-    const [chatInput, setChatInput] = useState('');
     const [chatMessages, setChatMessages] = useState([]);
+    const [mentorProfile, setMentorProfile] = useState(null);
+    const [showProfileModal, setShowProfileModal] = useState(false);
+    const [mySkills, setMySkills] = useState(techStack || []);
+    const [skillInput, setSkillInput] = useState('');
 
     // --- Guard: Mentor only ---
     useEffect(() => {
@@ -32,13 +35,22 @@ export default function MentorPage() {
         try {
             const data = await api.getMentorQueue();
             setQueue(Array.isArray(data) ? data : []);
+            
+            // Also load mentor profile if not loaded
+                if (!mentorProfile) {
+                    const res = await api.getMe();
+                    if (res?.user) {
+                        setMentorProfile(res.user);
+                        setMySkills(res.user.tech_stack || []);
+                    }
+                }
         } catch (e) {
             console.error('[MentorQueue]', e);
             setQueue([]);
         } finally {
             setQueueLoading(false);
         }
-    }, []);
+    }, [mentorProfile]);
 
     useEffect(() => {
         loadQueue();
@@ -47,16 +59,16 @@ export default function MentorPage() {
     }, [loadQueue]);
 
     // --- Join Session ---
-    const handleJoinSession = async (item) => {
+    const handleJoinSession = async (item, mode = 'live') => {
         setJoining(true);
         setError('');
         try {
-            await api.mentorJoinSession(item.projectId);
+            await api.req('POST', '/mentor/join', { projectId: item.projectId, mode });
             // Fetch context
             const ctx = await api.getMentorSessionContext(item.projectId);
             setSessionContext(ctx);
-            setSelectedStudent(item);
-            setChatMessages([{ role: 'system', content: `Connected to ${item.studentName}'s session. Task: ${item.currentTask}` }]);
+            setSelectedStudent({ ...item, interventionMode: mode });
+            setChatMessages([{ role: 'system', content: `Connected to ${item.studentName}'s session in ${mode} mode. Task: ${item.currentTask}` }]);
         } catch (e) {
             const msg = e.response?.data?.error || e.message;
             if (msg === 'SESSION_ALREADY_LOCKED') {
@@ -83,12 +95,51 @@ export default function MentorPage() {
         loadQueue(); // Refresh queue
     };
 
+    const loadChat = useCallback(async () => {
+        if (!selectedStudent?.projectId) return;
+        try {
+            const history = await api.req('GET', `/projects/${selectedStudent.projectId}/chat`);
+            setChatMessages(history.map(m => ({
+                role: m.role,
+                content: m.content
+            })));
+        } catch(e) {}
+    }, [selectedStudent?.projectId]);
+
+    useEffect(() => {
+        if (selectedStudent && selectedStudent.interventionMode === 'live') {
+            loadChat();
+            const interval = setInterval(loadChat, 4000);
+            return () => clearInterval(interval);
+        }
+    }, [selectedStudent, loadChat]);
+
     // --- Send Chat Hint ---
-    const handleSendHint = () => {
+    const handleSendHint = async () => {
         if (!chatInput.trim()) return;
-        setChatMessages(prev => [...prev, { role: 'mentor', content: chatInput }]);
-        // TODO: Send via WebSocket to student in real-time
+        
+        const msg = chatInput;
         setChatInput('');
+        try {
+            if (selectedStudent.interventionMode === 'hints') {
+                await api.req('POST', '/mentor/hint', { projectId: selectedStudent.projectId, hint: msg });
+                setChatMessages(prev => [...prev, { role: 'mentor', content: `[HINT SENT]: ${msg}` }]);
+            } else {
+                await api.req('POST', `/projects/${selectedStudent.projectId}/chat`, { message: msg });
+                loadChat();
+            }
+        } catch(e) { setError('Failed to send: ' + e.message); }
+    };
+
+    const handleUpdateSkills = async () => {
+        try {
+            const res = await api.req('PUT', '/users/profile', { tech_stack: mySkills });
+            if (res.user) setAuth(res.user, token);
+            setShowProfileModal(false);
+            loadQueue(); // Refresh with new skills
+        } catch (e) {
+            setError('Failed to update skills: ' + e.message);
+        }
     };
 
     // --- Detect language ---
@@ -240,6 +291,12 @@ export default function MentorPage() {
                     <div style={styles.onlineDot} />
                     <span>ONLINE</span>
                 </div>
+                <button 
+                    onClick={() => setShowProfileModal(true)} 
+                    style={{ ...styles.refreshBtn, marginLeft: 12, borderColor: '#58a6ff', color: '#58a6ff' }}
+                >
+                    My Skills ({mySkills.length})
+                </button>
             </div>
 
             {error && <div style={styles.errorBanner}><ShieldAlert size={14} /> {error}</div>}
@@ -262,9 +319,9 @@ export default function MentorPage() {
                                 <thead>
                                     <tr style={styles.tableHead}>
                                         <th style={styles.th}>Student</th>
+                                        <th style={styles.th}>Project Type</th>
                                         <th style={styles.th}>Task</th>
                                         <th style={styles.th}>Attempts</th>
-                                        <th style={styles.th}>Time Stuck</th>
                                         <th style={styles.th}>Priority</th>
                                         <th style={{ ...styles.th, textAlign: 'right' }}>Action</th>
                                     </tr>
@@ -279,24 +336,42 @@ export default function MentorPage() {
                                                     {item.helpRequested && <span style={styles.sosBadge}>SOS</span>}
                                                 </div>
                                             </td>
+                                            <td style={styles.td}>
+                                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                                                    {(() => {
+                                                        try {
+                                                            const stack = JSON.parse(item.projectStack || '[]');
+                                                            return stack.map(s => <span key={s} style={styles.stackItem}>{s}</span>);
+                                                        } catch(e) { return <span>-</span>; }
+                                                    })()}
+                                                </div>
+                                            </td>
                                             <td style={styles.td}>{item.currentTask}</td>
                                             <td style={styles.td}>
                                                 <span style={styles.failBadge}>{item.attempts} Fails</span>
                                             </td>
-                                            <td style={styles.tdMono}>{item.timeStuck}m</td>
                                             <td style={styles.td}>
                                                 <span style={{ color: item.priority > 10 ? '#f85149' : '#f0883e', fontWeight: 700 }}>
                                                     #{Math.round(item.priority)}
                                                 </span>
                                             </td>
                                             <td style={{ ...styles.td, textAlign: 'right' }}>
-                                                <button
-                                                    onClick={() => handleJoinSession(item)}
-                                                    disabled={joining}
-                                                    style={styles.joinBtn}
-                                                >
-                                                    {joining ? <Loader2 size={14} className="spin" /> : 'Join Session'}
-                                                </button>
+                                                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
+                                                    <button
+                                                        onClick={() => handleJoinSession(item, 'live')}
+                                                        disabled={joining}
+                                                        style={styles.joinBtn}
+                                                    >
+                                                        {joining ? <Loader2 size={12} className="spin" /> : 'Live Help'}
+                                                    </button>
+                                                    <button
+                                                        onClick={() => handleJoinSession(item, 'hints')}
+                                                        disabled={joining}
+                                                        style={{ ...styles.joinBtn, background: '#8149f8' }}
+                                                    >
+                                                        Hints Only
+                                                    </button>
+                                                </div>
                                             </td>
                                         </tr>
                                     ))}
@@ -343,6 +418,54 @@ export default function MentorPage() {
                     )}
                 </div>
             </div>
+
+            {showProfileModal && (
+                <div style={styles.modalOverlay}>
+                    <div style={styles.modalContent}>
+                        <h2 style={{ ...styles.queueTitle, marginBottom: 12 }}>My Mentor Expertise</h2>
+                        <p style={{ fontSize: 13, color: '#8b949e', marginBottom: 20 }}>
+                            Set your tech stack to filter students who need help in your areas of expertise.
+                        </p>
+                        
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 20 }}>
+                            {mySkills.map(s => (
+                                <span key={s} style={{ ...styles.stackItem, padding: '6px 12px', fontSize: 13 }}>
+                                    {s} <span onClick={() => setMySkills(prev => prev.filter(x => x !== s))} style={{ cursor: 'pointer', marginLeft: 8, opacity: 0.6 }}>×</span>
+                                </span>
+                            ))}
+                        </div>
+
+                        <div style={{ display: 'flex', gap: 8, marginBottom: 24 }}>
+                            <input 
+                                value={skillInput} 
+                                onChange={e => setSkillInput(e.target.value)}
+                                onKeyDown={e => {
+                                    if (e.key === 'Enter' && skillInput.trim()) {
+                                        setMySkills(prev => [...new Set([...prev, skillInput.trim()])]);
+                                        setSkillInput('');
+                                    }
+                                }}
+                                placeholder="Add skill (e.g. React, Node.js)" 
+                                style={styles.chatInputField}
+                            />
+                            <button 
+                                onClick={() => {
+                                    if (skillInput.trim()) {
+                                        setMySkills(prev => [...new Set([...prev, skillInput.trim()])]);
+                                        setSkillInput('');
+                                    }
+                                }}
+                                style={{ ...styles.sendBtn, height: 40 }}
+                            >Add</button>
+                        </div>
+
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
+                            <button onClick={() => setShowProfileModal(false)} style={{ ...styles.refreshBtn, padding: '8px 16px' }}>Cancel</button>
+                            <button onClick={handleUpdateSkills} style={styles.joinBtn}>Save Skills</button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
@@ -437,4 +560,8 @@ const styles = {
     chatInputRow: { display: 'flex', gap: 8, marginTop: 12 },
     chatInputField: { flex: 1, background: '#161b22', border: '1px solid #30363d', borderRadius: 6, padding: '10px 12px', color: '#e6edf3', fontSize: 13, outline: 'none' },
     sendBtn: { background: '#58a6ff', color: '#0d1117', border: 'none', borderRadius: 6, padding: '0 16px', cursor: 'pointer', fontWeight: 700, fontSize: 13 },
+    
+    stackItem: { background: 'rgba(88,166,255,0.1)', color: '#58a6ff', fontSize: 10, padding: '2px 8px', borderRadius: 4, border: '1px solid rgba(88,166,255,0.1)' },
+    modalOverlay: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 },
+    modalContent: { background: '#161b22', border: '1px solid #30363d', borderRadius: 12, padding: 32, width: '100%', maxWidth: 500 },
 };

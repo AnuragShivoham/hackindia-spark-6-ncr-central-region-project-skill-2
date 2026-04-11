@@ -522,5 +522,123 @@ router.get('/stats/:projectId', (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /detect-commands - Smart command detection for a folder
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/detect-commands', (req, res) => {
+  try {
+    const project = getUserProject(req, req.query.projectId);
+    const dirPath = req.query.path || '';
+    const fullPath = dirPath ? WorkspaceService.validateFilePath(project.id, dirPath) : WorkspaceService.getProjectPath(project.id);
+    
+    if (!fs.existsSync(fullPath) || !fs.statSync(fullPath).isDirectory()) {
+      return res.json({ commands: [] });
+    }
+
+    const entries = fs.readdirSync(fullPath);
+    const commands = [];
+
+    // ── package.json detection ──
+    if (entries.includes('package.json')) {
+      try {
+        const pkg = JSON.parse(fs.readFileSync(require('path').join(fullPath, 'package.json'), 'utf-8'));
+        const scripts = pkg.scripts || {};
+        
+        if (scripts.dev) commands.push({ label: 'npm run dev', cmd: 'npm run dev', tag: 'Dev Server', priority: 1 });
+        if (scripts.start) commands.push({ label: 'npm start', cmd: 'npm start', tag: 'Start', priority: 2 });
+        if (scripts.build) commands.push({ label: 'npm run build', cmd: 'npm run build', tag: 'Build', priority: 5 });
+        if (scripts.test) commands.push({ label: 'npm test', cmd: 'npm test', tag: 'Tests', priority: 6 });
+        if (scripts.lint) commands.push({ label: 'npm run lint', cmd: 'npm run lint', tag: 'Lint', priority: 7 });
+        
+        // Show all other custom scripts
+        Object.keys(scripts).forEach(key => {
+          if (!['dev', 'start', 'build', 'test', 'lint'].includes(key)) {
+            commands.push({ label: `npm run ${key}`, cmd: `npm run ${key}`, tag: key, priority: 8 });
+          }
+        });
+
+        // If node_modules doesn't exist, suggest install first
+        if (!entries.includes('node_modules')) {
+          commands.unshift({ label: 'npm install', cmd: 'npm install', tag: '⚠ Install First', priority: 0 });
+        }
+      } catch (e) { /* bad package.json, skip */ }
+    }
+
+    // ── Python detection ──
+    if (entries.includes('requirements.txt')) {
+      commands.push({ label: 'pip install -r requirements.txt', cmd: 'pip install -r requirements.txt', tag: 'Install Deps', priority: 0 });
+    }
+    if (entries.includes('main.py')) {
+      commands.push({ label: 'python main.py', cmd: 'python main.py', tag: 'Run', priority: 1 });
+    }
+    if (entries.includes('app.py')) {
+      commands.push({ label: 'python app.py', cmd: 'python app.py', tag: 'Flask/App', priority: 1 });
+    }
+    if (entries.includes('manage.py')) {
+      commands.push({ label: 'python manage.py runserver', cmd: 'python manage.py runserver', tag: 'Django', priority: 1 });
+    }
+    if (entries.includes('setup.py')) {
+      commands.push({ label: 'pip install -e .', cmd: 'pip install -e .', tag: 'Install Pkg', priority: 3 });
+    }
+
+    // ── Java detection ──
+    if (entries.includes('pom.xml')) {
+      commands.push({ label: 'mvn compile', cmd: 'mvn compile', tag: 'Maven Build', priority: 2 });
+      commands.push({ label: 'mvn spring-boot:run', cmd: 'mvn spring-boot:run', tag: 'Spring Boot', priority: 1 });
+    }
+    if (entries.includes('build.gradle') || entries.includes('build.gradle.kts')) {
+      commands.push({ label: 'gradle build', cmd: 'gradle build', tag: 'Gradle', priority: 2 });
+      commands.push({ label: 'gradle run', cmd: 'gradle run', tag: 'Run', priority: 1 });
+    }
+
+    // ── Docker detection ──
+    if (entries.includes('Dockerfile')) {
+      commands.push({ label: 'docker build -t app .', cmd: 'docker build -t app .', tag: 'Docker Build', priority: 4 });
+    }
+    if (entries.includes('docker-compose.yml') || entries.includes('docker-compose.yaml')) {
+      commands.push({ label: 'docker-compose up', cmd: 'docker-compose up', tag: 'Compose Up', priority: 3 });
+    }
+
+    // ── Makefile ──
+    if (entries.includes('Makefile')) {
+      commands.push({ label: 'make', cmd: 'make', tag: 'Build', priority: 2 });
+    }
+
+    // ── Go detection ──
+    if (entries.includes('go.mod')) {
+      commands.push({ label: 'go run .', cmd: 'go run .', tag: 'Run', priority: 1 });
+      commands.push({ label: 'go build', cmd: 'go build', tag: 'Build', priority: 2 });
+    }
+
+    // ── Rust detection ──
+    if (entries.includes('Cargo.toml')) {
+      commands.push({ label: 'cargo run', cmd: 'cargo run', tag: 'Run', priority: 1 });
+      commands.push({ label: 'cargo build', cmd: 'cargo build', tag: 'Build', priority: 2 });
+    }
+
+    // Sort by priority
+    commands.sort((a, b) => a.priority - b.priority);
+
+    // Hint about folder contents for the AI fallback
+    const detectedStack = [];
+    if (entries.includes('package.json')) detectedStack.push('Node.js');
+    if (entries.includes('requirements.txt') || entries.includes('main.py')) detectedStack.push('Python');
+    if (entries.includes('pom.xml')) detectedStack.push('Java/Maven');
+    if (entries.includes('Cargo.toml')) detectedStack.push('Rust');
+    if (entries.includes('go.mod')) detectedStack.push('Go');
+    if (entries.includes('Dockerfile')) detectedStack.push('Docker');
+
+    res.json({ 
+      commands, 
+      detectedStack,
+      folderName: require('path').basename(fullPath),
+      fileCount: entries.length 
+    });
+  } catch (err) {
+    console.error('[FS] Detect commands error:', err.message);
+    res.json({ commands: [], detectedStack: [], folderName: '', fileCount: 0 });
+  }
+});
+
 module.exports = router;
 

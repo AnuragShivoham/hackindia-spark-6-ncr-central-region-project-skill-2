@@ -18,14 +18,19 @@ function hydrateReview(row) {
   return { ...row, passed_checks: p(row.passed_checks), failed_checks: p(row.failed_checks), corrections: p(row.corrections) };
 }
 
-// USERS
-function createUser(email, name, skillLevel) {
-  const id = uuidv4();
-  db.prepare('INSERT INTO users (id,email,name,skill_level) VALUES (?,?,?,?)').run(id, email, name, skillLevel || 'beginner');
-  return db.prepare('SELECT * FROM users WHERE id=?').get(id);
+function hydrateUser(row) {
+  if (!row) return null;
+  return { ...row, tech_stack: p(row.tech_stack) };
 }
-function getUser(id)          { return db.prepare('SELECT * FROM users WHERE id=?').get(id); }
-function getUserByEmail(email) { return db.prepare('SELECT * FROM users WHERE email=?').get(email); }
+// USERS
+function createUser(email, name, skillLevel, techStack) {
+  const id = uuidv4();
+  db.prepare('INSERT INTO users (id,email,name,skill_level,tech_stack) VALUES (?,?,?,?,?)')
+    .run(id, email, name, skillLevel || 'beginner', j(techStack || []));
+  return hydrateUser(db.prepare('SELECT * FROM users WHERE id=?').get(id));
+}
+function getUser(id)          { return hydrateUser(db.prepare('SELECT * FROM users WHERE id=?').get(id)); }
+function getUserByEmail(email) { return hydrateUser(db.prepare('SELECT * FROM users WHERE email=?').get(email)); }
 function setActiveProject(userId, projectId) { db.prepare('UPDATE users SET active_project_id=? WHERE id=?').run(projectId, userId); }
 
 // PROJECTS

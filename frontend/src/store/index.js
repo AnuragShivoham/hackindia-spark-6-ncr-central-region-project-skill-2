@@ -5,6 +5,7 @@ export const useStore = create((set, get) => ({
   token:    localStorage.getItem('ab_token')|| null,
   role:     localStorage.getItem('ab_role') || null,
   avatar:   localStorage.getItem('ab_avatar')|| null,
+  techStack: JSON.parse(localStorage.getItem('ab_skills') || '[]'),
   projectId: localStorage.getItem('ab_pid') || null,
   taskId:    localStorage.getItem('ab_tid') || null,
   chatLog:  [],
@@ -15,13 +16,15 @@ export const useStore = create((set, get) => ({
     localStorage.setItem('ab_token', token);
     localStorage.setItem('ab_role',  user.role);
     if (user.avatar) localStorage.setItem('ab_avatar', user.avatar);
+    if (user.tech_stack) localStorage.setItem('ab_skills', JSON.stringify(user.tech_stack));
     
     set({ 
       userId: user.id, 
       userName: user.name, 
       token: token, 
       role: user.role, 
-      avatar: user.avatar || null 
+      avatar: user.avatar || null,
+      techStack: user.tech_stack || []
     });
   },
 
@@ -37,9 +40,10 @@ export const useStore = create((set, get) => ({
     localStorage.removeItem('ab_token');
     localStorage.removeItem('ab_role');
     localStorage.removeItem('ab_avatar');
+    localStorage.removeItem('ab_skills');
     localStorage.removeItem('ab_pid');
     localStorage.removeItem('ab_tid');
-    set({ userId: null, userName: null, token: null, role: null, avatar: null, project: null, milestones: [], currentTask: null, projectId: null, taskId: null });
+    set({ userId: null, userName: null, token: null, role: null, avatar: null, techStack: [], project: null, milestones: [], currentTask: null, projectId: null, taskId: null });
   },
 
   project:     null,

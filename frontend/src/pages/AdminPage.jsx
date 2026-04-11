@@ -12,6 +12,7 @@ const TABS = [
     { id: 'features', label: 'App Features', icon: <Settings size={16} /> },
     { id: 'extensions', label: 'Extensions', icon: <Puzzle size={16} /> },
     { id: 'users', label: 'User Management', icon: <Users size={16} /> },
+    { id: 'interventions', label: 'Interventions', icon: <ShieldAlert size={16} /> },
 ];
 
 const DEFAULT_FEATURES = {
@@ -57,6 +58,7 @@ export default function AdminPage() {
     const [users, setUsers] = useState([]);
     const [saving, setSaving] = useState(false);
     const [saveMsg, setSaveMsg] = useState('');
+    const [mentorQueue, setMentorQueue] = useState([]);
 
     const loadAll = async () => {
         try {
@@ -70,6 +72,10 @@ export default function AdminPage() {
             setSettings(prev => ({ ...prev, ...s }));
             setStats(st);
             setUsers(u);
+            
+            // Also load mentor queue for interventions tab
+            const q = await api.getMentorQueue();
+            setMentorQueue(q);
         } catch (e) { console.error(e); }
     };
 
@@ -329,6 +335,56 @@ export default function AdminPage() {
                                 </tbody>
                             </table>
                             {users.length === 0 && <div style={{ textAlign: 'center', color: '#484f58', padding: 32 }}>No users found.</div>}
+                        </div>
+                    </div>
+                )}
+
+                {/* ═══ INTERVENTIONS TAB ═══ */}
+                {activeTab === 'interventions' && (
+                    <div>
+                        <h2 style={S.pageTitle}>Active Interventions</h2>
+                        <p style={{ color: '#8b949e', fontSize: 13, marginBottom: 24 }}>Monitor all active student SOS requests and guide assignments.</p>
+                        
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(350px, 1fr))', gap: 16 }}>
+                            {mentorQueue.map(item => (
+                                <div key={item.projectId} style={{ ...S.card, borderLeft: `4px solid ${item.help_requested > 2 ? '#f85149' : '#f2cc60'}` }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
+                                        <div>
+                                            <div style={{ fontSize: 15, fontWeight: 800, color: '#e6edf3' }}>{item.studentName}</div>
+                                            <div style={{ fontSize: 12, color: '#8b949e' }}>{item.taskTitle}</div>
+                                        </div>
+                                        <div style={S.badge(item.help_requested > 2 ? '#f85149' : '#f2cc60')}>SOS x{item.help_requested}</div>
+                                    </div>
+
+                                    <div style={{ background: '#0d1117', padding: 10, borderRadius: 6, marginBottom: 12 }}>
+                                        <div style={{ fontSize: 11, color: '#8b949e', marginBottom: 4 }}>PROJECT CONTEXT</div>
+                                        <div style={{ fontSize: 12, color: '#e6edf3', display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                                            {(item.projectStack ? (Array.isArray(JSON.parse(item.projectStack)) ? JSON.parse(item.projectStack) : []) : []).map(s => (
+                                                <span key={s} style={{ background: '#21262d', padding: '2px 6px', borderRadius: 4 }}>{s}</span>
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                        <div style={{ fontSize: 11, color: item.timeStuckMinutes > 30 ? '#f85149' : '#8b949e' }}>
+                                            Stuck for {Math.floor(item.timeStuckMinutes)}m
+                                        </div>
+                                        <div style={{ fontSize: 11, color: '#58a6ff', fontWeight: 700 }}>
+                                            REQ MENTOR: {item.requested_mentor_id || 'ANY'}
+                                        </div>
+                                    </div>
+                                    
+                                    <div style={{ marginTop: 12, pt: 12, borderTop: '1px solid #21262d', display: 'flex', gap: 8 }}>
+                                         <button onClick={() => window.location.href = '/mentor'} style={{ ...S.ghostBtn, flex: 1, justifyContent: 'center' }}>Open Mentor View</button>
+                                    </div>
+                                </div>
+                            ))}
+                            {mentorQueue.length === 0 && (
+                                <div style={{ gridColumn: '1/-1', textAlign: 'center', padding: 48, color: '#484f58' }}>
+                                    <CheckCircle size={32} style={{ marginBottom: 12, opacity: 0.5 }} />
+                                    <div>All students are clear. No pending interventions.</div>
+                                </div>
+                            )}
                         </div>
                     </div>
                 )}

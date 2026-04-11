@@ -6,7 +6,7 @@ import {
     XCircle, Info, Lock
 } from 'lucide-react';
 
-export default function ProgressPanel({ data, loading }) {
+export default function ProgressPanel({ data, loading, onToggleSOS }) {
     if (loading) {
         return (
             <div style={{ padding: 20, color: '#8b949e', display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -20,8 +20,26 @@ export default function ProgressPanel({ data, loading }) {
     const { 
         currentFocus, timeline, skills, 
         errorMemory, behaviorMode, nextActionItems, 
-        isStuck, stuckSuggestion 
+        isStuck, stuckSuggestion, mentor_hint 
     } = data;
+
+    const [mentors, setMentors] = React.useState([]);
+    const [selectedMentor, setSelectedMentor] = React.useState(null);
+    const [loadingMentors, setLoadingMentors] = React.useState(false);
+
+    React.useEffect(() => {
+        const fetchMentors = async () => {
+            try {
+                setLoadingMentors(true);
+                const res = await fetch('/api/v1/mentors', {
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('ab_token')}` }
+                });
+                const d = await res.json();
+                setMentors(d);
+            } catch(e) {} finally { setLoadingMentors(false); }
+        };
+        fetchMentors();
+    }, []);
 
     return (
         <div style={styles.container}>
@@ -58,6 +76,77 @@ export default function ProgressPanel({ data, loading }) {
                              <Info size={12} /> {stuckSuggestion}
                         </div>
                     )}
+
+                    {mentor_hint && (
+                        <div style={{
+                            marginTop: 8,
+                            padding: '10px 12px',
+                            background: 'rgba(129,73,248,0.1)',
+                            border: '1px solid rgba(129,73,248,0.3)',
+                            borderRadius: 6,
+                            color: '#e6edf3'
+                        }}>
+                             <div style={{ fontSize: 9, fontWeight: 900, color: '#8149f8', marginBottom: 4 }}>
+                                 <Zap size={10} fill="#8149f8" /> HUMAN MENTOR GUIDANCE
+                             </div>
+                             <div style={{ fontSize: 13, lineHeight: 1.4 }}>{mentor_hint}</div>
+                        </div>
+                    )}
+                    {mentors.length > 0 && (
+                        <div style={{ marginTop: 12 }}>
+                            <div style={{ fontSize: 10, fontWeight: 900, color: '#8b949e', marginBottom: 6 }}>SELECT PREFERRED MENTOR (OPTIONAL)</div>
+                            <div style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 4 }}>
+                                <div 
+                                    onClick={() => setSelectedMentor(null)}
+                                    style={{ 
+                                        flexShrink: 0, padding: '6px 10px', borderRadius: 6, border: '1px solid #30363d', 
+                                        background: !selectedMentor ? '#21262d' : 'transparent', cursor: 'pointer',
+                                        fontSize: 11, fontWeight: 700, color: !selectedMentor ? '#58a6ff' : '#8b949e'
+                                    }}
+                                >
+                                    AUTO
+                                </div>
+                                {mentors.map(m => (
+                                    <div 
+                                        key={m.id}
+                                        onClick={() => setSelectedMentor(m.id)}
+                                        style={{ 
+                                            flexShrink: 0, padding: '6px 10px', borderRadius: 6, border: selectedMentor === m.id ? '1px solid #58a6ff' : '1px solid #30363d', 
+                                            background: selectedMentor === m.id ? 'rgba(88,166,255,0.1)' : 'transparent', cursor: 'pointer',
+                                            fontSize: 11, fontWeight: 700, color: selectedMentor === m.id ? '#58a6ff' : '#e6edf3'
+                                        }}
+                                    >
+                                        {m.name}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    <button 
+                        onClick={() => onToggleSOS && onToggleSOS(selectedMentor)}
+                        style={{
+                            marginTop: 12,
+                            background: isStuck ? '#f85149' : '#238636',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: 6,
+                            padding: '10px',
+                            fontSize: 12,
+                            fontWeight: 800,
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: 8,
+                            boxShadow: isStuck ? '0 4px 12px rgba(248,81,73,0.3)' : '0 4px 12px rgba(35,134,54,0.2)',
+                            width: '100%',
+                            transition: 'all 0.2s'
+                        }}
+                    >
+                        <Flame size={16} className={isStuck ? 'blink' : ''} /> 
+                        {isStuck ? 'REQUEST FOR MENTOR SOS' : 'REQUEST FOR MENTOR'}
+                    </button>
                 </div>
             </div>
 

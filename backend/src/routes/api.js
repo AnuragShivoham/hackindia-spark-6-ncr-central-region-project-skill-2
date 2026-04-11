@@ -99,6 +99,25 @@ router.get('/users/:id', wrap(async (req, res) => {
   res.json(u);
 }));
 
+router.put('/users/profile', auth, wrap(async (req, res) => {
+  const { name, tech_stack, skill_level } = req.body;
+  const db = require('../db/database');
+  
+  const updates = [];
+  const params = [];
+  
+  if (name) { updates.push('name = ?'); params.push(name); }
+  if (tech_stack) { updates.push('tech_stack = ?'); params.push(JSON.stringify(tech_stack)); }
+  if (skill_level) { updates.push('skill_level = ?'); params.push(skill_level); }
+  
+  if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
+  
+  params.push(req.user.id);
+  db.prepare(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+  
+  res.json({ success: true, user: tracker.getUser(req.user.id) });
+}));
+
 // ─────────────────────────────────────────────────────────────────────────────
 // AUTHENTICATION MIDDLEWARE (GLOBAL FOR PROTECTED ROUTES)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -317,10 +336,11 @@ router.post('/marketplace/:id/start', wrap(async (req, res) => {
   if (courseInfo && courseInfo.is_active) {
     const { v4: uuidv4 } = require('uuid');
     const projId = uuidv4();
+    const creatorId = courseInfo.creator_id || 'ADMIN';
     db.prepare(`
-      INSERT INTO projects (id, user_id, title, raw_goal, course_id, is_course, course_version, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'active')
-    `).run(projId, req.user.id, courseInfo.title, `Course: ${courseInfo.title}`, courseInfo.id, 1, courseInfo.version);
+      INSERT INTO projects (id, user_id, title, raw_goal, course_id, is_course, course_version, status, requested_mentor_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)
+    `).run(projId, req.user.id, courseInfo.title, `Course: ${courseInfo.title}`, courseInfo.id, 1, courseInfo.version, creatorId);
     
     // Physical setup
     WorkspaceService.createProjectWorkspace(projId);
@@ -333,8 +353,8 @@ router.post('/marketplace/:id/start', wrap(async (req, res) => {
   const communityProj = db.prepare('SELECT * FROM community_projects WHERE id = ? AND status = ?').get(marketplaceId, 'approved');
   if (communityProj) {
     const p = tracker.createProject(req.user.id, communityProj.description);
-    db.prepare('UPDATE projects SET title = ?, tech_stack = ?, skill_level = ?, deliverables = ?, status = ? WHERE id = ?')
-      .run(communityProj.title, communityProj.tech_stack, communityProj.difficulty, communityProj.final_outcome, 'planning', p.id);
+    db.prepare('UPDATE projects SET title = ?, tech_stack = ?, skill_level = ?, deliverables = ?, status = ?, requested_mentor_id = ? WHERE id = ?')
+      .run(communityProj.title, communityProj.tech_stack, communityProj.difficulty, communityProj.final_outcome, 'planning', communityProj.user_id, p.id);
     
     // Auto-generate milestones immediately
     const extracted = {
@@ -851,7 +871,45 @@ router.post('/tasks/:id/hint', wrap(async (req, res) => {
   res.json({ action: 'task_guidance', message: hint, task });
 }));
 
-router.post('/projects/:id/ask', wrap(async (req, res) => {
+router.post('/tasks/:id/ask', auth, wrap(async (req, res) => {
+  const taskId = req.params.id;
+  const { question, activeFileContent, activeFilePath, image, context } = req.body;
+
+  let projectId = req.body.projectId;
+  if (!projectId) {
+    const prog = db.prepare('SELECT project_id FROM course_progress WHERE task_id = ?').get(taskId);
+    projectId = prog?.project_id;
+  }
+  if (!projectId) {
+    const task = tracker.getTask(taskId);
+    if (task) {
+      const ms = tracker.getMilestone(task.milestone_id);
+      projectId = ms?.project_id;
+    }
+  }
+  if (!projectId) return res.status(404).json({ error: 'Could not associate task with a project' });
+
+  const p = tracker.getProject(projectId);
+  if (!p) return res.status(404).json({ error: 'Project not found' });
+
+  const currentTaskId = taskId;
+  const courseTask = db.prepare('SELECT * FROM course_tasks WHERE id = ?').get(currentTaskId);
+  const taskObj = !courseTask ? tracker.getTask(currentTaskId) : null;
+
+  const milestones = tracker.getProjectMilestones(p.id);
+  const history = tracker.getConversation(p.id, req.user.id, 10).map(t => ({ role: t.role, content: t.content }));
+  let treeNodes = [];
+  try { treeNodes = WorkspaceService.listFiles(p.id); } catch(e) {}
+
+  const guidance = await guidedExecution.getGuidance(courseTask || taskObj, question || 'Help me with this.', history, activeFileContent, activeFilePath, p, milestones, treeNodes, image, context?.mode);
+  
+  tracker.logTurn(p.id, 'user', question || "[Image Upload]", 'task_guidance', currentTaskId);
+  tracker.logTurn(p.id, 'mentor', guidance, 'task_guidance', currentTaskId);
+  
+  return res.json({ action: 'task_guidance', message: guidance, task: courseTask || taskObj });
+}));
+
+router.post('/projects/:id/ask', auth, wrap(async (req, res) => {
   const { question, activeFileContent, activeFilePath, image, context } = req.body;
   const projectId = req.params.id;
   
@@ -890,6 +948,23 @@ router.post('/projects/:id/ask', wrap(async (req, res) => {
   tracker.logTurn(p.id, 'mentor', guidance + authMsg, 'task_guidance', currentTaskId);
   
   return res.json({ action: 'task_guidance', message: guidance + authMsg, task: courseTask || task });
+}));
+
+// ─── Live Student-Mentor Chat ─────────────────────────────────────────────────
+router.post('/projects/:id/chat', auth, wrap(async (req, res) => {
+    const { message } = req.body;
+    const projectId = req.params.id;
+    const userId = req.user.id;
+    const role = req.user.role === 'mentor' ? 'mentor' : 'student';
+
+    db.prepare('INSERT INTO chat_history (project_id, user_id, role, content) VALUES (?, ?, ?, ?)').run(projectId, userId, role, message);
+    res.json({ success: true });
+}));
+
+router.get('/projects/:id/chat', auth, wrap(async (req, res) => {
+    const projectId = req.params.id;
+    const history = db.prepare('SELECT c.*, u.name as userName FROM chat_history c JOIN users u ON c.user_id = u.id WHERE c.project_id = ? ORDER BY c.created_at ASC').all(projectId);
+    res.json(history);
 }));
 
 router.get('/projects/:id/progress', wrap(async (req, res) => {
@@ -1048,9 +1123,9 @@ router.post('/projects/:id/execute/run', wrap(async (req, res) => {
       return res.json({ action: 'preview', path: activeFilePath });
   }
 
-  const command = executionService.getCommand(pType, activeFilePath, project.id);
+  const { cdPath, runCmd } = executionService.getCommand(pType, activeFilePath, project.id);
 
-  res.json({ action: 'run', command, projectType: pType });
+  res.json({ action: 'run', cdPath, runCmd, projectType: pType });
 }));
 
 router.get('/projects/:id/execute/test', wrap(async (req, res) => {
@@ -1136,6 +1211,29 @@ router.get('/tasks/current', wrap(async (req, res) => {
 
     if (!task) return res.status(404).json({ error: 'Task not found' });
 
+    const milestones = tracker.getProjectMilestones(projectId);
+    const roadmap = milestones.map(m => ({ 
+        title: m.title, 
+        status: m.status, 
+        unlockConditions: m.measurable_output ? [m.measurable_output] : [] 
+    }));
+
+    // Generate Intelligence Mock
+    const intelligence = {
+        currentFocus: { title: task.title, missing: task.missing || [] },
+        nextActionItems: [
+           "Code the logic in " + (task.file_path || 'active file'),
+           "Run code and EXPLAIN your solution",
+           "Pass QA review to unlock next task"
+        ],
+        timeline: roadmap,
+        skills: (task.concepts_taught || []).map(s => ({ name: s, level: 'Medium', action: 'Implement now' })),
+        errorMemory: [],
+        behaviorMode: { status: 'guided', directive: 'Complete the current task to build your mental model.' },
+        isStuck: progressStatus === 'failed' || (p.attempts > 1),
+        stuckSuggestion: "You seem to be having trouble with the implementation. Would you like a human mentor to review your code live?"
+    };
+
     res.json({
         taskId: task.id,
         title: task.title,
@@ -1143,7 +1241,11 @@ router.get('/tasks/current', wrap(async (req, res) => {
         expected: task.expected_output || task.measurable_output,
         hints: task.hints ? (Array.isArray(task.hints) ? task.hints : JSON.parse(task.hints)) : [],
         starter_template: task.starter_template || '',
-        progress_status: progressStatus
+        progress_status: progressStatus,
+        intelligence,
+        mentor_hint: p.mentor_hint,
+        intervention_mode: p.intervention_mode,
+        active_mentor_id: p.active_mentor_id
     });
 }));
 
@@ -1316,20 +1418,48 @@ router.get('/mentor/queue', wrap(async (req, res) => {
     const userRole = req.user?.role || db.prepare("SELECT role FROM users WHERE id = ?").get(req.user?.id || 'TEST_USER')?.role;
     if (userRole !== 'mentor') return res.status(403).json({ error: 'Mentors only.' });
 
-    // Grab all active stuck sessions
+    const isAdmin = req.user.role === 'admin';
     const pendingTasks = db.prepare(`
         SELECT cp.*, u.name as studentName, u.id as studentId, ct.title as taskTitle, ct.file_path, 
+               p.tech_stack as projectStack, p.requested_mentor_id,
                (julianday('now') - julianday(cp.started_at)) * 24 * 60 as timeStuckMinutes,
                (SELECT SUM(cheat_score) FROM behavior_logs WHERE task_id = cp.task_id AND user_id = cp.user_id) as totalCheatScore
         FROM course_progress cp
         JOIN users u ON cp.user_id = u.id
         JOIN course_tasks ct ON cp.task_id = ct.id
+        JOIN projects p ON cp.project_id = p.id
         WHERE cp.status IN ('pending', 'awaiting_explanation')
         AND (cp.attempts >= 2 OR cp.help_requested > 0)
         AND cp.active_mentor_id IS NULL
-    `).all();
+        AND (
+            ? = 1 
+            OR p.requested_mentor_id = ? 
+            OR p.requested_mentor_id = 'ADMIN'
+        )
+    `).all(isAdmin ? 1 : 0, req.user.id);
 
-    const queue = pendingTasks.map(pt => {
+    const mentorUser = tracker.getUser(req.user.id);
+    const mentorSkills = Array.isArray(mentorUser.tech_stack) ? mentorUser.tech_stack : [];
+
+    const queue = pendingTasks.filter(pt => {
+        // SKILL MATCHING LOGIC
+        let projectStack = [];
+        try {
+            projectStack = JSON.parse(pt.projectStack || '[]');
+        } catch(e) { /* ignore */ }
+
+        // If project has no specified stack, any mentor can help
+        if (!projectStack || projectStack.length === 0) return true;
+        
+        // If mentor has no skills set, they can see everything for now (to avoid empty queue for new mentors)
+        // unless we want to be strict. Let's be helpful but prioritize matches if possible.
+        if (!mentorSkills || mentorSkills.length === 0) return true;
+
+        // Check for intersection
+        return projectStack.some(skill => 
+            mentorSkills.some(mSkill => mSkill.toLowerCase() === skill.toLowerCase())
+        );
+    }).map(pt => {
         const timeStuck = Math.max(pt.timeStuckMinutes || 0, 0);
         const cheatScore = pt.totalCheatScore || 0;
         const failureConsistency = pt.failure_consistency || 0;
@@ -1352,7 +1482,43 @@ router.get('/mentor/queue', wrap(async (req, res) => {
         };
     }).sort((a, b) => b.priority - a.priority);
 
-    res.json(queue);
+    // [ADDITION] Also check projects table for manual SOS pings that aren't in course_progress
+    const rawManualPings = db.prepare(`
+        SELECT p.id as projectId, p.title as projectTitle, p.raw_goal as rawGoal, p.tech_stack as projectStack, p.help_requested, p.last_help_request, p.requested_mentor_id,
+               u.name as studentName, u.id as studentId
+        FROM projects p
+        JOIN users u ON p.user_id = u.id
+        WHERE p.help_requested > 0 
+        AND p.active_mentor_id IS NULL
+        AND p.id NOT IN (SELECT project_id FROM course_progress WHERE help_requested > 0)
+        AND (p.requested_mentor_id = ? OR (p.requested_mentor_id = 'ADMIN' AND ? = 1))
+    `).all(req.user.id, isAdmin ? 1 : 0);
+
+    rawManualPings.forEach(p => {
+        // Apply same skill matching filter
+        let projectStack = [];
+        try { projectStack = JSON.parse(p.projectStack || '[]'); } catch(e) {}
+        
+        const hasSkillMatch = !projectStack.length || !mentorSkills.length || 
+            projectStack.some(skill => mentorSkills.some(ms => ms.toLowerCase() === skill.toLowerCase()));
+            
+        if (hasSkillMatch) {
+            queue.push({
+                projectId: p.projectId,
+                studentName: p.studentName,
+                studentId: p.studentId,
+                currentTask: p.projectTitle || p.rawGoal || 'Project Overview',
+                projectStack: p.projectStack,
+                attempts: 0,
+                timeStuck: 0,
+                cheatScore: 0,
+                priority: 50, // Manual SOS gets high priority base
+                helpRequested: true
+            });
+        }
+    });
+
+    res.json(queue.sort((a, b) => b.priority - a.priority));
 }));
 
 // GET /session/context/:projectId (Context Preview before joining)
@@ -1360,15 +1526,36 @@ const workspaceService = require('../services/workspaceService');
 router.get('/session/context/:projectId', wrap(async (req, res) => {
     const { projectId } = req.params;
     
-    // Quick snapshot DB details
-    const p = db.prepare('SELECT cp.*, ct.file_path FROM course_progress cp JOIN course_tasks ct ON cp.task_id = ct.id WHERE cp.project_id = ?').get(projectId);
-    if (!p) return res.status(404).json({ error: 'Context not found.' });
+    // Check projects table for base info
+    const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId);
+    if (!project) return res.status(404).json({ error: 'Project not found.' });
+
+    let p = null;
+    let filePath = null;
+
+    if (project.is_course) {
+        p = db.prepare('SELECT cp.*, ct.file_path FROM course_progress cp JOIN course_tasks ct ON cp.task_id = ct.id WHERE cp.project_id = ?').get(projectId);
+        if (p) filePath = p.file_path;
+    } else {
+        // For non-course projects, suggest the project title or goal as task
+        p = {
+            taskTitle: project.title || project.raw_goal,
+            attempts: 0,
+            lastScaffoldLevel: 1,
+            recentFeedback: []
+        };
+        // Try to find a logical entry point or the last updated file
+        const lastFile = db.prepare('SELECT file_path FROM workspace_files WHERE project_id = ? ORDER BY updated_at DESC LIMIT 1').get(projectId);
+        filePath = lastFile?.file_path;
+    }
+
+    if (!p) return res.status(404).json({ error: 'Session context not found.' });
 
     // Context Sanitization + Truncation limits exposure
     let codeSnapshot = '';
     try {
-        if (p.file_path) {
-            codeSnapshot = workspaceService.readFile(projectId, p.file_path);
+        if (filePath) {
+            codeSnapshot = workspaceService.readFile(projectId, filePath);
             if (codeSnapshot.length > 50000) {
                 codeSnapshot = codeSnapshot.substring(0, 50000) + '\n\n// TRUNCATED: File size exceeded bounds.';
             }
@@ -1398,13 +1585,26 @@ router.get('/session/context/:projectId', wrap(async (req, res) => {
 
 // POST /mentor/join (Lock the session)
 router.post('/mentor/join', wrap(async (req, res) => {
-    const { projectId } = req.body;
+    const { projectId, mode = 'live' } = req.body;
     const userId = req.user?.id || 'TEST_USER';
     
-    // OCC Update Race Condition Defense
-    const r = db.prepare(`UPDATE course_progress SET active_mentor_id = ?, interventions_count = interventions_count + 1 WHERE project_id = ? AND active_mentor_id IS NULL`).run(userId, projectId);
+    // Check if it's a course project first (for V2 engine)
+    const projectRec = db.prepare('SELECT is_course FROM projects WHERE id = ?').get(projectId);
+    if (!projectRec) return res.status(404).json({ error: 'Project not found' });
+    const isCourse = projectRec.is_course;
+
+    let changes = 0;
+    if (isCourse) {
+        // Try locking course_progress
+        const r = db.prepare(`UPDATE course_progress SET active_mentor_id = ?, interventions_count = interventions_count + 1 WHERE project_id = ? AND active_mentor_id IS NULL`).run(userId, projectId);
+        changes = r.changes;
+    }
     
-    if (r.changes === 0) {
+    // Always update projects table for unified tracking
+    const r2 = db.prepare(`UPDATE projects SET active_mentor_id = ?, interventions_count = interventions_count + 1, intervention_mode = ?, mentor_hint = ? WHERE id = ? AND (active_mentor_id IS NULL OR active_mentor_id = ?)`).run(userId, projectId, mode, mode === 'hints' ? 'Mentor is reviewing...' : null, projectId, userId);
+    if (!isCourse) changes = r2.changes;
+    
+    if (changes === 0) {
         return res.status(400).json({ error: 'SESSION_ALREADY_LOCKED' }); // UI catches this natively
     }
     
@@ -1414,25 +1614,60 @@ router.post('/mentor/join', wrap(async (req, res) => {
 
 // POST /task/help (Student flags themselves manually)
 router.post('/task/help', wrap(async (req, res) => {
-    const { projectId } = req.body;
+    const { projectId, targetMentorId } = req.body;
     
-    // Check cooldown to prevent queue flooding
-    const p = db.prepare('SELECT help_requested, last_help_request FROM course_progress WHERE project_id = ?').get(projectId);
-    if (!p) return res.status(404).json({ error: 'Progress not found' });
+    // Check projects table (Now unified source for SOS)
+    const p = db.prepare('SELECT help_requested, last_help_request, requested_mentor_id FROM projects WHERE id = ?').get(projectId);
+    if (!p) return res.status(404).json({ error: 'Project not found' });
     
-    if (p.help_requested >= 2) {
-        return res.status(400).json({ error: 'You have reached the maximum SOS requests (2) for this task.' });
+    if (p.help_requested >= 10) { 
+        return res.status(400).json({ error: 'Maximum SOS requests reached for this session.' });
     }
     
     if (p.last_help_request) {
         const diffMs = Date.now() - new Date(p.last_help_request).getTime();
-        if (diffMs < 5 * 60 * 1000) {
-            return res.status(429).json({ error: 'Please wait 5 minutes before spamming SOS again.' });
+        if (diffMs < 2 * 60 * 1000) { 
+            return res.status(429).json({ error: 'Please wait 2 minutes before sending another SOS.' });
         }
     }
 
+    let finalMentorId = targetMentorId || p.requested_mentor_id || 'ADMIN';
+    if (targetMentorId) {
+        const check = db.prepare('SELECT role FROM users WHERE id = ?').get(targetMentorId);
+        if (!check || check.role !== 'mentor') finalMentorId = 'ADMIN';
+    }
+
+    // Update Project Main record
+    db.prepare(`UPDATE projects SET help_requested = help_requested + 1, last_help_request = datetime('now'), requested_mentor_id = ? WHERE id = ?`).run(finalMentorId, projectId);
+    
+    // Also sync to course_progress if it exists (for V2 engine compatibility)
     db.prepare(`UPDATE course_progress SET help_requested = help_requested + 1, last_help_request = datetime('now') WHERE project_id = ?`).run(projectId);
-    res.json({ success: true, message: 'Help requested! A mentor has been pinged.' });
+
+    res.json({ success: true, message: `Help requested! ${finalMentorId === 'ADMIN' ? 'A general request has been sent.' : 'Specifically pinged the mentor.'}` });
+}));
+
+// GET /mentors (List available mentors for students)
+router.get('/mentors', auth, wrap(async (req, res) => {
+    const mentors = db.prepare('SELECT id, name, tech_stack FROM users WHERE role = ?').all('mentor');
+    res.json(mentors.map(m => ({ ...m, tech_stack: JSON.parse(m.tech_stack || '[]') })));
+}));
+
+// POST /mentor/hint (Submit a hint in hint-mode)
+router.post('/mentor/hint', wrap(async (req, res) => {
+    const { projectId, hint } = req.body;
+    const userId = req.user?.id || 'TEST_USER';
+    
+    const p = db.prepare('SELECT active_mentor_id FROM projects WHERE id = ?').get(projectId);
+    if (!p || p.active_mentor_id !== userId) {
+        return res.status(403).json({ error: 'You are not the active mentor for this project.' });
+    }
+
+    db.prepare(`UPDATE projects SET mentor_hint = ?, help_requested = 0 WHERE id = ?`).run(hint, projectId);
+    
+    // Also log to conversation so it appears in chat
+    tracker.logTurn(projectId, 'mentor', `[MENTOR HINT]: ${hint}`, 'intervention', null);
+
+    res.json({ success: true, message: 'Hint sent to student!' });
 }));
 
 // POST /mentor/leave (Unlock the session, drop to guided)
@@ -1440,10 +1675,11 @@ router.post('/mentor/leave', wrap(async (req, res) => {
     const { projectId } = req.body;
     const userId = req.user?.id || 'TEST_USER';
     
-    // Clear lock only if owned
-    const r = db.prepare(`UPDATE course_progress SET active_mentor_id = NULL, help_requested = 0 WHERE project_id = ? AND active_mentor_id = ?`).run(projectId, userId);
+    // Clear lock in both potential tables
+    const r1 = db.prepare(`UPDATE course_progress SET active_mentor_id = NULL, help_requested = 0 WHERE project_id = ? AND active_mentor_id = ?`).run(projectId, userId);
+    const r2 = db.prepare(`UPDATE projects SET active_mentor_id = NULL, help_requested = 0 WHERE id = ? AND active_mentor_id = ?`).run(projectId, userId);
     
-    if (r.changes === 0) {
+    if (r1.changes === 0 && r2.changes === 0) {
         return res.status(400).json({ error: 'You do not own this session lock.' });
     }
 
@@ -1747,6 +1983,11 @@ router.put('/admin/users/:id/role', adminOnly, wrap(async (req, res) => {
   if (!['student', 'mentor', 'admin'].includes(role)) return res.status(400).json({ error: 'Invalid role' });
   db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, req.params.id);
   res.json({ success: true });
+}));
+
+router.get('/projects/:id/progress', auth, wrap(async (req, res) => {
+  const data = await learningController.getProjectProgress(req.params.id);
+  res.json(data);
 }));
 
 module.exports = router;

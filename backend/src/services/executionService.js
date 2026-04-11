@@ -29,43 +29,73 @@ class ExecutionService {
     }
 
     getCommand(projectType, customEntryFile = null, projectId = null) {
-        let prefix = '';
+        let cdPath = '';
+        let fileName = '';
         
-        // If a file is selected, determine its directory to detect sub-projects (like 'my-app')
         if (customEntryFile) {
-            const dirParts = customEntryFile.split('/');
-            if (dirParts.length > 1) {
-                const subDir = dirParts[0]; 
-                prefix = `cd ${subDir} && `;
+            // Normalize: strip leading slashes
+            const normalized = customEntryFile.replace(/^\/+/, '');
+            const parts = normalized.split('/');
+            fileName = parts[parts.length - 1];
+            
+            // Extract the directory path
+            if (parts.length > 1) {
+                cdPath = parts.slice(0, -1).join('/');
             }
             
-            // If they explicitly have a Node script open, run it directly
-            if (customEntryFile.endsWith('.js') && !customEntryFile.endsWith('App.js') && !customEntryFile.endsWith('index.js')) {
-                 return `${prefix}node ${dirParts.pop()}`;
+            // Direct file execution by extension
+            if (fileName.endsWith('.py')) {
+                return { cdPath, runCmd: `python ${fileName}` };
             }
-            if (customEntryFile.endsWith('.py')) {
-                 return `${prefix}python ${dirParts.pop()}`;
+            if (fileName.endsWith('.js') && !fileName.endsWith('App.js') && !fileName.endsWith('index.js')) {
+                return { cdPath, runCmd: `node ${fileName}` };
             }
-            if (customEntryFile.endsWith('.java')) {
-                 const className = dirParts.pop().replace('.java', '');
-                 return `${prefix}javac ${className}.java && java ${className}`;
+            if (fileName.endsWith('.ts') && !fileName.endsWith('.d.ts')) {
+                return { cdPath, runCmd: `npx ts-node ${fileName}` };
+            }
+            if (fileName.endsWith('.java')) {
+                const className = fileName.replace('.java', '');
+                return { cdPath, runCmd: `javac ${className}.java; java ${className}` }; // Use ; for powershell compatibility
+            }
+            if (fileName.endsWith('.c')) {
+                const outName = fileName.replace('.c', '');
+                return { cdPath, runCmd: `gcc ${fileName} -o ${outName}; ./${outName}` };
+            }
+            if (fileName.endsWith('.cpp')) {
+                const outName = fileName.replace('.cpp', '');
+                return { cdPath, runCmd: `g++ ${fileName} -o ${outName}; ./${outName}` };
+            }
+            if (fileName.endsWith('.go')) {
+                return { cdPath, runCmd: `go run ${fileName}` };
+            }
+            if (fileName.endsWith('.rs')) {
+                return { cdPath, runCmd: `rustc ${fileName}; ./${fileName.replace('.rs', '')}` };
+            }
+            if (fileName.endsWith('.rb')) {
+                return { cdPath, runCmd: `ruby ${fileName}` };
+            }
+            if (fileName.endsWith('.sh')) {
+                return { cdPath, runCmd: `bash ${fileName}` };
+            }
+            // If package.json is selected, run npm start in that directory
+            if (fileName === 'package.json') {
+                return { cdPath, runCmd: `npm start` };
             }
         }
 
         switch (projectType?.toLowerCase()) {
             case 'frontend':
-                // For React/Vite: if they are in a subfolder like my-app, we cd first
-                return `${prefix}npm run dev || npm start`;
+                return { cdPath, runCmd: `npm run dev || npm start` };
             case 'backend':
-                return `${prefix}node server.js || npm start`;
+                return { cdPath, runCmd: `node server.js || npm start` };
             case 'java':
-                return `${prefix}javac Main.java && java Main`;
+                return { cdPath, runCmd: `javac Main.java; java Main` };
             case 'python_ds':
             case 'ml':
             case 'python':
-                return `${prefix}python main.py`;
+                return { cdPath, runCmd: `python main.py` };
             default:
-                return `${prefix}npm start`;
+                return { cdPath, runCmd: `npm start` };
         }
     }
 

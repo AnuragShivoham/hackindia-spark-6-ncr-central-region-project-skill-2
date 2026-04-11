@@ -36,6 +36,7 @@ async function req(method, path, body) {
 const get = p => req('GET', p);
 const post = (p, b) => req('POST', p, b);
 export const api = {
+  req,
   createUser: (email, name, skill_level) => post('/users', { email, name, skill_level }),
   getUser: (id) => get(`/users/${id}`),
   submitGoal: (uid, rg) => post('/goals/submit', { user_id: uid, raw_goal: rg }),
@@ -74,6 +75,7 @@ export const api = {
   renameFile: (oldPath, newPath, projectId) => req('PUT', '/fs/rename', { oldPath, newPath, projectId }),
   gitClone: (url, targetDir, projectId) => post('/fs/git-clone', { url, targetDir, projectId }),
   gitPush: (message, projectId) => post('/fs/git-push', { message, projectId }),
+  detectCommands: (projectId, dirPath) => get(`/fs/detect-commands?projectId=${projectId}&path=${encodeURIComponent(dirPath || '')}`),
   authorizeDeletion: (projectId, path) => post('/fs/authorize-deletion', { projectId, path }),
 
   // Phase 9: Mentor + Marketplace
@@ -86,7 +88,7 @@ export const api = {
   getMentorSessionContext: (projectId) => get(`/session/context/${projectId}`),
   mentorJoinSession: (projectId) => post('/mentor/join', { projectId }),
   mentorLeaveSession: (projectId) => post('/mentor/leave', { projectId }),
-  requestHelp: (projectId) => post('/task/help', { projectId }),
+  requestHelp: (projectId, targetMentorId) => post('/task/help', { projectId, targetMentorId }),
   
   getMarketplace: (q, difficulty) => get(`/marketplace?q=${encodeURIComponent(q || '')}&difficulty=${difficulty || 'all'}`),
   submitCommunityProject: (data) => post('/projects/community/submit', data),

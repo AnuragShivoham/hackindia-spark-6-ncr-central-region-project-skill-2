@@ -142,26 +142,69 @@ class WorkspaceService {
   }
 
   /**
-   * Create/update file
+   * Create/update file (with retry for transient FS errors like Dropbox sync locks)
    */
   static writeFile(projectId, filePath, content) {
     const fullPath = this.validateFilePath(projectId, filePath);
     
-    // Create directories if needed
+    // Ensure the entire directory chain exists (including the project workspace root)
+    const projectDir = this.getProjectPath(projectId);
+    if (!fs.existsSync(projectDir)) {
+      fs.mkdirSync(projectDir, { recursive: true });
+    }
+    
+    // Fix: If any ancestor in the path is a FILE instead of a DIRECTORY, replace it.
+    // This happens when "touch" creates an extensionless file like "src" that the IDE
+    // later treats as a folder (due to the no-extension = directory heuristic).
     const dir = path.dirname(fullPath);
+    const relDir = path.relative(projectDir, dir);
+    if (relDir && relDir !== '.') {
+      const segments = relDir.split(path.sep);
+      let current = projectDir;
+      for (const seg of segments) {
+        current = path.join(current, seg);
+        if (fs.existsSync(current)) {
+          const stat = fs.statSync(current);
+          if (stat.isFile()) {
+            // A file is blocking directory creation — remove it and create dir
+            console.log(`[Workspace] Replacing file-as-directory: ${current}`);
+            fs.unlinkSync(current);
+            fs.mkdirSync(current, { recursive: true });
+          }
+        } else {
+          fs.mkdirSync(current, { recursive: true });
+          break; // recursive:true handles the rest
+        }
+      }
+    }
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
 
-    try {
-      fs.writeFileSync(fullPath, content, 'utf-8');
-      return {
-        path: filePath,
-        size: content.length,
-        created: true,
-      };
-    } catch (err) {
-      throw new Error(`Failed to write file: ${err.message}`);
+    // Retry logic for transient errors (Dropbox locks, cloud sync, etc.)
+    const maxRetries = 3;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        fs.writeFileSync(fullPath, content, 'utf-8');
+        return {
+          path: filePath,
+          size: content.length,
+          created: true,
+        };
+      } catch (err) {
+        const isTransient = ['ENOENT', 'EBUSY', 'EPERM', 'EACCES'].includes(err.code);
+        if (isTransient && attempt < maxRetries) {
+          // Re-create directory in case Dropbox removed it between check and write
+          if (err.code === 'ENOENT') {
+            try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {}
+          }
+          // Small delay before retry (100ms * attempt)
+          const start = Date.now();
+          while (Date.now() - start < 100 * attempt) { /* busy wait */ }
+          continue;
+        }
+        throw new Error(`Failed to write file: ${err.message}`);
+      }
     }
   }
 
